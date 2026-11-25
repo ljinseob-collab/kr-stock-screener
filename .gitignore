@@ -1,0 +1,7 @@
+# 수집 캐시 / 로컬 검증용 임시 파일
+.cache/
+scratch/
+preview.png
+__pycache__/
+*.pyc
+.DS_Store
