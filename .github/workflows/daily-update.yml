@@ -15,6 +15,7 @@ permissions:
   contents: write      # docs/data 커밋
   pages: write         # GitHub Pages 배포
   id-token: write      # deploy-pages OIDC
+  actions: read        # deploy-pages가 이번 실행의 아티팩트 조회
 
 concurrency:
   group: pages
@@ -86,9 +87,6 @@ jobs:
           done
           echo "데이터 푸시 실패" >&2
           exit 1
-
-      - name: 아티팩트 인식 대기
-        run: sleep 10
 
       - name: Pages 아티팩트 업로드
         uses: actions/upload-pages-artifact@v4
