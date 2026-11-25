@@ -51,6 +51,7 @@
 | 최근 뉴스 | 네이버 금융 `m.stock.naver.com/api/news/stock/{code}` |
 
 - 공시·뉴스 API는 **CORS 를 허용하지 않아** 브라우저에서 직접 부를 수 없습니다. 그래서 수집 단계에서 종목별로 받아 `docs/data/extras/{n}.json`(16분할, 약 1.5MB)에 저장하고, 상세 화면을 열 때 해당 샤드 하나만 받습니다(첫 화면 로딩에는 영향 없음).
+- GitHub Actions 에서는 워크플로우의 `git add` 목록에 `docs/data/extras` 가 없어도 커밋되도록, 스크립트가 CI(`GITHUB_ACTIONS=true`)일 때만 `git add docs/data/extras` 를 실행합니다.
 - 배당수익률은 **현재가 기준**(주당배당금 ÷ 현재가)이며, 배당락·분할로 실제 통지서와 다를 수 있습니다.
 
 - 매물대는 일별 **종가** 기준입니다(분봉·체결 단위 아님).

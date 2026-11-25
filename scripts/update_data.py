@@ -857,6 +857,20 @@ def main() -> int:
     with_news = sum(1 for x in extras.values() if x.get("n"))
     log(f"상세 데이터: {extra_dir} ({len(extras):,}종목, {extra_bytes/1024/1024:.2f} MB, "
         f"공시 있음 {with_disc:,} · 뉴스 있음 {with_news:,})")
+
+    # GitHub Actions: 이어지는 '데이터 커밋' 단계는 `git add docs/data/stocks.json
+    # docs/data/failed.json` 만 하고 인덱스 전체를 커밋한다. 워크플로우 파일을 고치지
+    # 않고도 상세 데이터가 함께 커밋되도록, CI 에서만 extras 를 미리 스테이징한다.
+    if extras and os.environ.get("GITHUB_ACTIONS") == "true":
+        rel = os.path.relpath(extra_dir, BASE_DIR)
+        if not rel.startswith(".."):
+            try:
+                import subprocess
+                subprocess.run(["git", "add", "--", rel], cwd=BASE_DIR,
+                               check=False, timeout=120)
+                log(f"CI: {rel} 스테이징 완료")
+            except Exception as exc:  # noqa: BLE001 - 커밋 단계는 워크플로우가 처리
+                log(f"CI: {rel} 스테이징 생략 ({exc})")
     log(f"실패 로그: {failed_path} ({len(failed)}건)")
     log(f"총 소요 {elapsed/60:.1f}분")
 
