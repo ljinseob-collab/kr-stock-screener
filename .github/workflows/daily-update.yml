@@ -13,30 +13,18 @@ on:
 
 permissions:
   contents: write      # docs/data 커밋
-  pages: write         # GitHub Pages 배포
-  id-token: write      # deploy-pages OIDC
-  actions: read        # deploy-pages가 이번 실행의 아티팩트 조회
 
 concurrency:
-  group: pages
+  group: data-update
   cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v4
-
-      - name: Pages 사이트 준비 (아직 꺼져 있으면 자동 활성화 시도)
-        continue-on-error: true
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: 파이썬 설정
         uses: actions/setup-python@v5
@@ -67,8 +55,7 @@ jobs:
           print(f"기준일 {m['as_of']} · {m['count']}종목 · 실패 {m['failed']} · {os.path.getsize(p)/1024/1024:.2f} MB")
           PY
 
-      - name: 데이터 커밋
-        if: vars.SKIP_DATA_COMMIT != 'true'
+      - name: 데이터 커밋 (docs 폴더가 Pages 배포 소스이므로 커밋이 곧 배포)
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -80,19 +67,10 @@ jobs:
           git commit -m "data: $(date -u +%Y-%m-%d) 매물대 스크리너 데이터 갱신"
           for i in 1 2 3 4 5; do
             if git pull --rebase --autostash origin main && git push origin main; then
-              echo "데이터 푸시 완료"
+              echo "데이터 푸시 완료 — Pages가 자동 재배포합니다"
               exit 0
             fi
             sleep 5
           done
           echo "데이터 푸시 실패" >&2
           exit 1
-
-      - name: Pages 아티팩트 업로드
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: docs
-
-      - name: Pages 배포
-        id: deploy
-        uses: actions/deploy-pages@v5
