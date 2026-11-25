@@ -9,7 +9,7 @@ const state = {
   meta: null,
   filters: {
     market: 'all', profit: 'all', value: false, cum: 'all',
-    vwap: false, rsiMin: null, rsiMax: null, q: '', sort: 'mc'
+    vwap: false, rsiMin: null, rsiMax: null, div: false, q: '', sort: 'mc'
   },
   preset: 'all',
   period: 5       // 매물대 기준 기간(년): 1~5
@@ -30,6 +30,7 @@ function fmtEok(v) {
 }
 const fmtPct = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
   : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+const fmtDy = v => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(2) + '%';
 const signCls = v => (v === null || v === undefined) ? '' : (v > 0 ? 'pos' : (v < 0 ? 'neg' : ''));
 const mktName = m => (m === 'K' ? '코스피' : '코스닥');
 
@@ -150,11 +151,13 @@ function filterRows() {
       if (f.rsiMax !== null && s.rsi > f.rsiMax) return false;
     }
     if (q && !(s.n.toLowerCase().includes(q) || s.c.includes(q))) return false;
+    if (f.div && !(s.dps > 0)) return false;
     return true;
   });
 
   const sorters = {
     mc: (a, b) => (b.mc || 0) - (a.mc || 0),
+    div: (a, b) => ((b.dy ?? -1) - (a.dy ?? -1)) || ((b.mc || 0) - (a.mc || 0)),
     cum: (a, b) => ((cumOf(a) ?? 101) - (cumOf(b) ?? 101)) || ((a.rsi ?? 101) - (b.rsi ?? 101)),
     rsi: (a, b) => ((a.rsi ?? 101) - (b.rsi ?? 101)) || ((cumOf(a) ?? 101) - (cumOf(b) ?? 101)),
     mult: (a, b) => ((a.mult ?? 1e9) - (b.mult ?? 1e9)) || ((b.mc || 0) - (a.mc || 0)),
@@ -200,6 +203,10 @@ function rowHtml(s) {
     </div>
     <div class="cell num" data-label="현재가"><span class="price">${fmtInt(s.p)}</span></div>
     <div class="cell num" data-label="시가총액">${fmtEok(s.mc)}</div>
+    <div class="cell num div-cell" data-label="배당" title="${s.dps > 0 ? `${s.dvy}년 주당배당금 ${fmtInt(s.dps)}원 ÷ 현재가` : '최근 사업연도 배당 없음'}">
+      <span class="div-y ${s.dy >= 3 ? 'hi' : ''}">${fmtDy(s.dy)}</span>
+      ${s.dps > 0 ? `<span class="sub">${fmtInt(s.dps)}원</span>` : ''}
+    </div>
     <div class="cell num" data-label="RSI(14)">
       <div class="rsi"><span class="rsi-val ${rsiCls}">${rsi ? rsi.toFixed(1) : '–'}</span>
       <div class="rsi-track"><div class="rsi-fill" style="width:${rsiWidth}%"></div></div></div>
@@ -233,6 +240,91 @@ function renderRows(append) {
   more.textContent = `더 보기 (${nf.format(Math.min(PAGE, state.rows.length - state.shown))}개) · 남은 ${nf.format(state.rows.length - state.shown)}개`;
 }
 
+/* ---------------- 상세: 최근 공시·뉴스 (지연 로드) ----------------
+   네이버 API 는 CORS 를 열어주지 않아 브라우저에서 직접 못 부른다.
+   update_data.py 가 종목별 공시·뉴스를 16개 파일(data/extras/{n}.json)로 나눠
+   두었고, 상세 화면을 열 때 그 종목이 든 파일 하나만 받아 캐시한다. */
+const EXT_CACHE = {};
+
+function shardOf(code) {
+  const n = state.meta && state.meta.extra ? state.meta.extra.shards : 16;
+  let s = 0;
+  for (const ch of String(code)) if (ch >= '0' && ch <= '9') s += Number(ch);
+  return s % n;
+}
+
+function extVersion() {
+  const g = (state.meta && state.meta.generated_at) || '';
+  return g.replace(/\D/g, '').slice(0, 12) || '0';
+}
+
+async function loadExtras(s) {
+  const shard = shardOf(s.c);
+  try {
+    if (!EXT_CACHE[shard]) {
+      const res = await fetch(`data/extras/${shard}.json?v=${extVersion()}`, { cache: 'no-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      EXT_CACHE[shard] = await res.json();
+    }
+    renderExtras(s.c, EXT_CACHE[shard][s.c] || null);
+  } catch (err) {
+    renderExtras(s.c, null, true);
+  }
+}
+
+/* 공시 제목 키워드 → 배지 (굵직한 이벤트만) */
+const DISC_TAGS = [
+  [/유상증자|제3자배정/, '유증', 'red'],
+  [/무상증자/, '무증', 'blue'],
+  [/자사주|자기주식/, '자사주', 'violet'],
+  [/소각/, '소각', 'orange'],
+  [/공급계약|단일판매|수주/, '수주', 'green'],
+  [/잠정.*실적|실적.*공정공시|영업실적/, '실적', 'teal'],
+  [/배당/, '배당', 'amber'],
+  [/전환사채|신주인수권/, 'CB', 'slate']
+];
+
+function discTags(title) {
+  const out = [];
+  for (const [re, label, cls] of DISC_TAGS) {
+    if (re.test(title) && !out.some(t => t[0] === label)) out.push([label, cls]);
+    if (out.length >= 2) break;
+  }
+  return out.map(([label, cls]) => `<span class="d-tag ${cls}">${label}</span>`).join('');
+}
+
+const mmdd = d => (d || '').slice(5).replace('-', '.');
+
+function renderExtras(code, x, failed) {
+  const dBox = document.getElementById('d-disc');
+  const nBox = document.getElementById('d-news');
+  const panel = document.getElementById('detail');
+  if (!dBox || !nBox || panel.hidden || panel.dataset.code !== code) return;
+
+  if (failed) {
+    const msg = '<p class="muted rload">공시·뉴스를 불러오지 못했습니다.</p>';
+    dBox.innerHTML = msg; nBox.innerHTML = msg;
+    return;
+  }
+
+  const discs = (x && x.d) || [];
+  dBox.innerHTML = discs.length
+    ? discs.map(r => `<div class="ri"><span class="ri-d">${mmdd(r[0])}</span>` +
+        `<span class="ri-t">${discTags(r[1])}${esc(r[1])}</span></div>`).join('')
+    : '<p class="muted rload">최근 공시가 없습니다.</p>';
+
+  const news = (x && x.n) || [];
+  nBox.innerHTML = news.length
+    ? news.map(r => {
+        const link = /^\d{3}\/\d+$/.test(r[3] || '') ? `https://n.news.naver.com/mnews/article/${r[3]}` : '';
+        const inner = `<span class="ri-d">${mmdd(r[0])}</span>` +
+          `<span class="ri-t">${esc(r[1])}<span class="ri-m">${esc(r[2] || '')}</span></span>`;
+        return link ? `<a class="ri" href="${link}" target="_blank" rel="noopener">${inner}</a>`
+          : `<div class="ri">${inner}</div>`;
+      }).join('')
+    : '<p class="muted rload">최근 뉴스가 없습니다.</p>';
+}
+
 /* ---------------- 상세 패널 ---------------- */
 function openDetail(code) {
   const s = state.all.find(x => x.c === code);
@@ -247,6 +339,7 @@ function openDetail(code) {
   document.body.style.overflow = 'hidden';
   d.querySelector('.detail-panel').scrollTop = 0;
   d.querySelector('.close').focus({ preventScroll: true });
+  loadExtras(s);
 }
 
 function closeDetail() {
@@ -274,6 +367,13 @@ function detailHtml(s) {
     <div class="dstat"><div class="k">시가총액</div><div class="v">${fmtEok(s.mc)}</div></div>
     <div class="dstat"><div class="k">RSI(14)</div><div class="v ${s.rsi >= 70 ? 'pos' : ''}">${s.rsi ? s.rsi.toFixed(1) : '–'}</div></div>
     <div class="dstat"><div class="k">${P}년 평균단가</div><div class="v">${fmtInt(vp.vwap)}<small>원·${fmtPct(vg)}</small></div></div>
+    <div class="dstat span2">
+      <div class="k">배당수익률 <span class="muted">· ${s.dps > 0 && s.dvy ? `${s.dvy}년 배당` : '최근 사업연도'}</span></div>
+      <div class="v ${s.dy >= 3 ? 'pos' : ''}">${s.dps > 0 ? s.dy.toFixed(2) : '–'}<small>${s.dps > 0 ? '%' : ''}</small></div>
+      <div class="dsub">${s.dps > 0 ? `현재가 기준${s.dy >= 3 ? ' · 고배당(3%↑)' : ''}` : '무배당'}</div>
+    </div>
+    <div class="dstat"><div class="k">주당배당금</div><div class="v">${s.dps > 0 ? fmtInt(s.dps) : '–'}<small>${s.dps > 0 ? '원' : ''}</small></div>
+      <div class="dsub">${s.dps > 0 ? `${s.dvy}년` : '무배당'}</div></div>
   </div>`;
 
   /* --- 매물대 차트 --- */
@@ -330,8 +430,14 @@ function detailHtml(s) {
     ${finTable}
     <div class="section-title">시가총액 vs 영업이익×10</div>
     ${cmp}
+    <div class="section-title">최근 공시 <span class="hint">네이버 금융${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.disc}건` : ''}</span></div>
+    <div class="rlist" id="d-disc"><p class="muted rload">불러오는 중…</p></div>
+    <div class="section-title">최근 뉴스 <span class="hint">네이버 금융${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.news}건` : ''}</span></div>
+    <div class="rlist" id="d-news"><p class="muted rload">불러오는 중…</p></div>
     <div class="links">
       <a class="primary" href="https://finance.naver.com/item/main.naver?code=${s.c}" target="_blank" rel="noopener">네이버 금융</a>
+      <a href="https://m.stock.naver.com/domestic/stock/${s.c}/notice" target="_blank" rel="noopener">네이버 공시</a>
+      <a href="https://dart.fss.or.kr/dsab007/main.do?option=corp&amp;textCrpNm=${encodeURIComponent(s.n)}" target="_blank" rel="noopener">DART 공시</a>
       <a href="https://finance.naver.com/item/coinfo.naver?code=${s.c}" target="_blank" rel="noopener">기업 실적 분석</a>
     </div>
     ${note.length ? `<p class="dnote">⚠ ${note.join(' ')}</p>` : ''}
@@ -439,6 +545,7 @@ function readFilters() {
   f.value = document.getElementById('f-value').checked;
   f.cum = document.getElementById('f-cum').value;
   f.vwap = document.getElementById('f-vwap').checked;
+  f.div = document.getElementById('f-div').checked;
   f.q = document.getElementById('f-q').value;
   f.sort = document.getElementById('f-sort').value;
   const mn = document.getElementById('f-rsi-min').value;
@@ -464,6 +571,7 @@ function activeFilterCount() {
   if (f.value) n++;
   if (f.cum !== 'all') n++;
   if (f.vwap) n++;
+  if (f.div) n++;
   if (f.rsiMin !== null || f.rsiMax !== null) n++;
   if (f.q.trim()) n++;
   return n;
@@ -485,15 +593,15 @@ function applyPreset(p, doRender = true) {
   const check = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
   if (p === 'all') {
     set('f-market', 'all'); set('f-profit', 'all'); check('f-value', false);
-    set('f-cum', 'all'); check('f-vwap', false); set('f-q', '');
+    set('f-cum', 'all'); check('f-vwap', false); check('f-div', false); set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '');
   } else if (p === 'bottom') {
     set('f-market', 'all'); set('f-profit', 'all'); check('f-value', false);
-    set('f-cum', 'low'); check('f-vwap', false); set('f-q', '');
+    set('f-cum', 'low'); check('f-vwap', false); check('f-div', false); set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '35');
   } else if (p === 'mine') {
     set('f-market', 'all'); set('f-profit', 'op3'); check('f-value', true);
-    set('f-cum', 'low'); check('f-vwap', true); set('f-q', '');
+    set('f-cum', 'low'); check('f-vwap', true); check('f-div', false); set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '35');
   }
   setPreset(p);
@@ -534,7 +642,7 @@ function bindEvents() {
 
   ['f-market', 'f-profit', 'f-cum', 'f-sort'].forEach(id =>
     document.getElementById(id).addEventListener('change', () => { setPreset(''); readFilters(); filterRows(); }));
-  ['f-value', 'f-vwap'].forEach(id =>
+  ['f-value', 'f-vwap', 'f-div'].forEach(id =>
     document.getElementById(id).addEventListener('change', () => { setPreset(''); readFilters(); filterRows(); }));
 
   let t = null;

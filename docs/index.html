@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>국내주식 매물대 스크리너 · 1~5년 매물대·재무·RSI</title>
-<meta name="description" content="코스피·코스닥 보통주 2,500여 종목의 1~5년 매물대(POC·누적 백분위), 평균단가(VWAP), RSI(14), 3년 영업이익·순이익, 시가총액을 한 화면에서 거르는 스크리너.">
-<link rel="stylesheet" href="style.css?v=20261125d">
+<title>국내주식 매물대 스크리너 · 1~5년 매물대·재무·배당·RSI</title>
+<meta name="description" content="코스피·코스닥 보통주 2,500여 종목의 1~5년 매물대(POC·누적 백분위), 평균단가(VWAP), RSI(14), 3년 영업이익·순이익, 배당수익률·주당배당금, 최근 공시·뉴스, 시가총액을 한 화면에서 거르는 스크리너.">
+<link rel="stylesheet" href="style.css?v=20261125e">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f45d0'/%3E%3Cpath d='M7 21l5-7 4 4 4-6 5 5' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -17,7 +17,7 @@
       </span>
       <div>
         <h1>국내주식 매물대 스크리너</h1>
-        <p class="tagline">1~5년 매물대 · 평균단가 · RSI(14) · 3년 실적 · 시가총액</p>
+        <p class="tagline">1~5년 매물대 · 평균단가 · RSI(14) · 배당 · 3년 실적 · 공시·뉴스</p>
       </div>
     </div>
     <div class="status" id="status">데이터 불러오는 중…</div>
@@ -100,6 +100,14 @@
         </span>
       </label>
 
+      <label class="field check">
+        <span>배당</span>
+        <span class="check-wrap">
+          <input type="checkbox" id="f-div">
+          <span>배당주만 (배당금 지급)</span>
+        </span>
+      </label>
+
       <div class="field rsi-field">
         <span>RSI(14)</span>
         <div class="rsi-row">
@@ -124,6 +132,7 @@
         <span>정렬</span>
         <select id="f-sort">
           <option value="mc">시가총액 높은 순</option>
+          <option value="div">배당수익률 높은 순</option>
           <option value="cum">매물대 낮은 순</option>
           <option value="rsi">RSI 낮은 순</option>
           <option value="mult">영업이익 배수 낮은 순</option>
@@ -150,6 +159,7 @@
         <div>종목</div>
         <div class="num">현재가</div>
         <div class="num">시가총액</div>
+        <div class="num">배당</div>
         <div class="num">RSI(14)</div>
         <div class="num">매물대 위치</div>
         <div class="num" id="lbl-th-vwap">5년 평균 대비</div>
@@ -188,8 +198,12 @@
           <dd>최근 3개 사업연도 확정 실적으로 상태를 나눕니다. <b>🟢 3년 흑자</b> 3년 연속 흑자 · <b>🔵 흑자전환</b> 전년(또는 그 이전)에 적자였다가 최근 흑자 · <b>🟡 최근 적자</b> 흑자였던 해가 있는데 최근 적자 · <b>🔴 계속 적자</b> 3년 모두 적자. 영업이익을 메인 뱃지로, 순이익을 아래 뱃지로 보여줍니다.</dd>
           <dt>3년 연속 흑자</dt>
           <dd>최근 3개 사업연도 확정 실적이 모두 흑자인 경우입니다. 3년치 실적이 없으면 ‘–’로 표시합니다.</dd>
+          <dt>배당수익률 · 주당배당금</dt>
+          <dd>네이버 금융 연간 실적의 <b>주당배당금</b> 중 가장 최근 <b>확정 사업연도</b> 값을 쓰고, 배당수익률은 그 배당금을 <b>현재가</b>로 나눈 값입니다. 지난해 배당이 없던 종목은 <b>–</b>(무배당)으로 표시합니다. 참고: 배당락·분할 등으로 실제 통지서와 다를 수 있습니다.</dd>
+          <dt>최근 공시 · 뉴스</dt>
+          <dd>상세 화면을 열면 종목별 <b>최근 공시 4건</b>과 <b>최근 뉴스 3건</b>을 불러옵니다(네이버 금융 제공). 공시 제목에 <b>유증·무증·자사주·소각·수주·실적·배당</b> 같은 키워드가 있으면 색 배지로 강조합니다. 전체 공시 원문은 아래 <b>DART 공시</b>·<b>네이버 공시</b> 링크에서 확인하세요.</dd>
           <dt>데이터 출처</dt>
-          <dd>일별 시세·연간 실적: 네이버 금융 (수정주가 기준, 액면분할 반영). 종목 목록·시가총액: KRX 상장 목록(FinanceDataReader). ETF·ETN·스팩·리츠·우선주·펀드는 제외한 코스피·코스닥 보통주만 담았습니다.</dd>
+          <dd>일별 시세·연간 실적·배당·공시·뉴스: 네이버 금융 (수정주가 기준, 액면분할 반영). 종목 목록·시가총액: KRX 상장 목록(FinanceDataReader). ETF·ETN·스팩·리츠·우선주·펀드는 제외한 코스피·코스닥 보통주만 담았습니다.</dd>
         </dl>
         <p class="disclaimer">이 화면은 공개 데이터를 정리한 참고 자료이며 투자 권유가 아닙니다. 수치는 데이터 제공처 사정에 따라 달라질 수 있으니 투자 판단 전에 증권사 HTS·공시로 다시 확인하세요.</p>
       </div>
@@ -215,6 +229,6 @@
   </aside>
 </div>
 
-<script src="app.js?v=20261125c"></script>
+<script src="app.js?v=20261125e"></script>
 </body>
 </html>

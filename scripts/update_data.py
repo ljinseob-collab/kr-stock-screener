@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-국내주식(코스피·코스닥 보통주) 5년 매물대 · 5년 VWAP · RSI(14) · 3년 실적 · 시가총액 스크리너
+국내주식(코스피·코스닥 보통주) 5년 매물대 · 5년 VWAP · RSI(14) · 3년 실적 · 배당 · 시가총액 스크리너
 데이터 생성기.
 
 데이터 소스 (모두 무료 공개 데이터, API 키 불필요)
   1) 종목 목록 + 시가총액  : FinanceDataReader  StockListing('KRX')   (네이버 금융/ KRX 상장 목록)
   2) 5년 일별 OHLCV        : 네이버 금융 api.finance.naver.com/siseJson.naver (수정주가·액면분할 반영)
   3) 연간 영업이익/순이익  : 네이버 금융 m.stock.naver.com/api/stock/{code}/finance/annual
+  4) 주당배당금(연간)      : 같은 연간 실적 응답의 '주당배당금' 행 (최근 확정 사업연도)
+  5) 최근 공시             : 네이버 금융 m.stock.naver.com/api/stock/{code}/disclosure
+  6) 최근 뉴스             : 네이버 금융 m.stock.naver.com/api/news/stock/{code}
+     (CORS 미허용 → 브라우저 직접 호출 불가, 여기서 수집해 정적 JSON 으로 배포)
 
 출력
-  docs/data/stocks.json   : 스크리너용 데이터 (종목별 지표 + 매물대 20구간)
+  docs/data/stocks.json   : 스크리너용 데이터 (종목별 지표 + 매물대 20구간 + 배당)
+  docs/data/extras/{n}.json : 종목별 최근 공시·뉴스 (상세 화면에서 지연 로드, 16개 분할)
   docs/data/failed.json   : 수집 실패/제외 종목 로그
 
 사용 예
@@ -23,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import os
@@ -56,11 +62,17 @@ UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
 DAILY_URL = ("https://api.finance.naver.com/siseJson.naver"
              "?symbol={code}&requestType=1&startTime={start}&endTime={end}&timeframe=day")
 FIN_URL = "https://m.stock.naver.com/api/stock/{code}/finance/annual"
+DISC_URL = "https://m.stock.naver.com/api/stock/{code}/disclosure"
+NEWS_URL = "https://m.stock.naver.com/api/news/stock/{code}?pageSize=20&page=1"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(BASE_DIR, "docs", "data", "stocks.json")
 
 FIN_LABELS = ("영업이익", "당기순이익")
+
+EXTRA_SHARDS = 16         # 상세 화면용 공시·뉴스 JSON 분할 수
+DISC_LIMIT = 4            # 종목당 최근 공시 건수
+NEWS_LIMIT = 3            # 종목당 최근 뉴스 건수
 
 # 상장 목록에서 제외할 종목 판별 규칙 (ETF/ETN/스팩/리츠/우선주/펀드 등)
 RE_SPAC_DEPT = re.compile(r"SPAC", re.I)
@@ -266,7 +278,11 @@ def _num(v: Any) -> Optional[float]:
 
 
 def fetch_finance(code: str) -> Dict[str, Any]:
-    """최근 연간(확정치) 영업이익/당기순이익 최대 3개년. 단위: 억원."""
+    """최근 연간(확정치) 영업이익/당기순이익 최대 3개년. 단위: 억원.
+
+    같은 응답의 '주당배당금' 행에서 최근 확정 사업연도 주당배당금(dps, 원)의
+    사업연도(dvy)도 함께 뽑는다. 무배당('-')이면 값이 없다.
+    """
     url = FIN_URL.format(code=code)
 
     def one():
@@ -310,9 +326,142 @@ def fetch_finance(code: str) -> Dict[str, Any]:
 
         fy = fy[-3:]
         fm = fy[-1][1] if fy else 12
-        return {"fy": fy, "fm": fm}
+        out: Dict[str, Any] = {"fy": fy, "fm": fm}
+
+        # 주당배당금: 가장 최근 확정 사업연도의 값 (무배당 '-' 면 값이 없다)
+        dps = values("주당배당금")
+        if keys:
+            k = keys[-1]
+            v = dps.get(k)
+            if v is not None and v > 0:
+                out["dps"] = int(round(v))
+                out["dvy"] = int(k[:4])
+        return out
 
     return with_retry(one, tries=4, base_delay=0.8)
+
+
+# ----------------------------------------------------------------------------
+# 3-b) 최근 공시 · 뉴스
+# ----------------------------------------------------------------------------
+
+RE_NAME_PREFIX = re.compile(r"^(?:\(주\)|㈜|주식회사)\s*")
+
+
+def _clean_text(t: Any) -> str:
+    return re.sub(r"\s+", " ", html.unescape(str(t or ""))).strip()
+
+
+def strip_company(title: str, name: str) -> str:
+    """공시 제목 앞의 회사명 표기('삼성전자(주) ', '(주)피엔풍년 ' 등)를 떼어낸다.
+
+    종목 상세 화면 안에서 보여주므로 회사명은 중복이다. 떼고 나면 남는 게
+    없으면 원문을 그대로 둔다. 종목명과 공시 표기가 달라도('한화생명' ↔
+    '한화생명보험(주)', 'GS글로벌' ↔ '(주)지에스글로벌') 두세 번 돌려 정리한다.
+    """
+    n_pat = re.compile(r"^" + r"\s*".join(map(re.escape, name.replace(" ", ""))) +
+                       r"\s*(?:\(주\)|㈜|주식회사)?\s*[·ㆍ,.\-:]?\s*")
+    p_mark = re.compile(r"^(?:\(주\)|㈜|주식회사)\s*[^\s]{2,20}\s*[·ㆍ,.\-:]?\s*")
+    p_paren = re.compile(r"^[^()\s]{1,20}\(주\)\s*[·ㆍ,.\-:]?\s*")
+
+    t = _clean_text(title)
+    for _ in range(3):
+        prev = t
+        for pat in (n_pat, p_mark, p_paren):
+            m = pat.match(t)
+            if m and len(t) - m.end() >= 3:
+                t = t[m.end():].strip()
+        if t == prev:
+            break
+    return t if len(t) >= 3 else _clean_text(title)
+
+
+def fetch_disclosure(code: str, name: str, limit: int = DISC_LIMIT) -> List[List[str]]:
+    """최근 공시 [[날짜 YYYY-MM-DD, 제목], ...] (최신순)."""
+    url = DISC_URL.format(code=code)
+
+    def one():
+        r = http_get(url)
+        if r.status_code == 404:
+            return []
+        if r.status_code == 429:
+            raise HttpError("429 rate limited")
+        if r.status_code != 200:
+            raise HttpError(f"HTTP {r.status_code}")
+        try:
+            arr = r.json() or []
+        except ValueError:
+            return []
+        out: List[List[str]] = []
+        for it in arr:
+            if len(out) >= limit:
+                break
+            dt = str(it.get("datetime") or "")[:10]
+            title = strip_company(_clean_text(it.get("title")), name)
+            if not title or not dt:
+                continue
+            out.append([dt, title])
+        return out
+
+    return with_retry(one, tries=3, base_delay=0.6)
+
+
+def fetch_news(code: str, name: str, limit: int = NEWS_LIMIT) -> List[List[str]]:
+    """최근 뉴스 [[날짜, 제목, 언론사, 'officeId/articleId'], ...] (최신순).
+
+    응답은 비슷한 기사 묶음(list of groups)이라 평평하게 펴서 중복을 없앤다.
+    종목과 무관한 기사(관련 기업 묶음)가 섞여 오므로 종목명이 제목·요약에
+    나오는 기사를 먼저 채우고, 모자라면 최신순으로 채운다.
+    """
+    url = NEWS_URL.format(code=code)
+
+    def one():
+        r = http_get(url)
+        if r.status_code == 404:
+            return []
+        if r.status_code == 429:
+            raise HttpError("429 rate limited")
+        if r.status_code != 200:
+            raise HttpError(f"HTTP {r.status_code}")
+        try:
+            groups = r.json() or []
+        except ValueError:
+            return []
+
+        seen = set()
+        items: List[Dict[str, Any]] = []
+        for g in groups:
+            for it in (g.get("items") or []):
+                iid = str(it.get("id") or (str(it.get("officeId")) + str(it.get("articleId"))))
+                if iid in seen:
+                    continue
+                seen.add(iid)
+                items.append(it)
+        items.sort(key=lambda x: str(x.get("datetime") or ""), reverse=True)
+
+        def related(it: Dict[str, Any]) -> bool:
+            return name in str(it.get("title") or "") or name in str(it.get("body") or "")
+
+        picked = [it for it in items if related(it)][:limit]
+        if len(picked) < limit:
+            picked += [it for it in items if not related(it)][: limit - len(picked)]
+
+        out: List[List[str]] = []
+        for it in picked:
+            dt = re.sub(r"\D", "", str(it.get("datetime") or ""))[:8]
+            title = _clean_text(it.get("titleFull") or it.get("title"))
+            if not title or len(dt) < 8:
+                continue
+            press = _clean_text(it.get("officeName"))
+            link = f"{it.get('officeId') or ''}/{it.get('articleId') or ''}".strip("/")
+            out.append([f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}", title, press, link])
+        return out
+
+    return with_retry(one, tries=3, base_delay=0.6)
+
+
+def shard_of(code: str, n: int = EXTRA_SHARDS) -> int:
+    return sum(int(ch) for ch in code if ch.isdigit()) % n
 
 
 # ----------------------------------------------------------------------------
@@ -444,7 +593,7 @@ def cum_below(price: Optional[float], vp: Dict[str, Any]) -> Optional[float]:
 # ----------------------------------------------------------------------------
 
 def build_stock(row: Dict[str, Any], start: str, end: str,
-                want_finance: bool = True) -> Dict[str, Any]:
+                want_finance: bool = True, want_extras: bool = True) -> Dict[str, Any]:
     rows = fetch_daily(row["code"], start, end)
     if len(rows) < MIN_TRADING_DAYS:
         raise HttpError(f"거래일 부족({len(rows)}일)", retryable=False)
@@ -475,9 +624,32 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
         if "cum" in base:
             data["cum"] = base["cum"]
 
+    if want_extras:
+        extras: Dict[str, Any] = {}
+        try:
+            d = fetch_disclosure(row["code"], row["name"])
+            if d:
+                extras["d"] = d
+        except Exception as exc:  # noqa: BLE001 - 공시 실패는 종목 수집을 막지 않는다
+            print(f"  ! 공시 실패 {row['code']} {row['name']}: {exc}", flush=True)
+        try:
+            n = fetch_news(row["code"], row["name"])
+            if n:
+                extras["n"] = n
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ! 뉴스 실패 {row['code']} {row['name']}: {exc}", flush=True)
+        if extras:
+            data["_x"] = extras
+
     if want_finance:
         fin = fetch_finance(row["code"])
         fy = fin["fy"]
+        # 배당: 최근 확정 사업연도 주당배당금 + 현재가 기준 배당수익률
+        if fin.get("dps"):
+            data["dps"] = int(fin["dps"])
+            data["dvy"] = int(fin["dvy"])
+            if price > 0:
+                data["dy"] = round(fin["dps"] / price * 100, 2)
         if fy:
             # [연도, 영업이익, 당기순이익]  (억원)
             data["fin"] = [[y, _r(op), _r(ni)] for (y, _m, op, ni) in fy]
@@ -515,6 +687,7 @@ def main() -> int:
     ap.add_argument("--years", type=int, default=YEARS, help="매물대 기간(년), 기본 5")
     ap.add_argument("--out", type=str, default=DEFAULT_OUT, help="출력 JSON 경로")
     ap.add_argument("--no-finance", action="store_true", help="재무 수집 생략(속도 테스트)")
+    ap.add_argument("--no-extras", action="store_true", help="최근 공시·뉴스 수집 생략(속도 테스트)")
     ap.add_argument("--end", type=str, default="", help="기준일 YYYYMMDD (기본: 오늘)")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--resume", action="store_true",
@@ -566,14 +739,15 @@ def main() -> int:
                     continue
         log(f"      캐시에서 {len(results):,}종목 로드")
         universe_codes = {u["code"] for u in universe}
-        results = {k: v for k, v in results.items() if k in universe_codes}
-    cache_f = open(cache_path, "a", encoding="utf-8")
+        results = {k: v for k, v in results.items()
+                   if k in universe_codes and (args.no_extras or "_x" in v)}
+    cache_f = open(cache_path, "a" if args.resume else "w", encoding="utf-8")
 
     pending = [u for u in universe if u["code"] not in results]
-    log(f"[2/3] 일별 시세·재무 수집 시작 (대상 {len(pending):,}개, workers={args.workers})")
+    log(f"[2/3] 일별 시세·재무·공시·뉴스 수집 시작 (대상 {len(pending):,}개, workers={args.workers})")
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
         futs = {
-            ex.submit(build_stock, u, start, end, not args.no_finance): u
+            ex.submit(build_stock, u, start, end, not args.no_finance, not args.no_extras): u
             for u in pending
         }
         for fut in as_completed(futs):
@@ -600,6 +774,13 @@ def main() -> int:
 
     log(f"[3/3] 결과 저장")
 
+    # 상세 화면용 공시·뉴스는 종목별로 떼어내 16개 파일로 나눠 저장 (지연 로드)
+    extras: Dict[str, Dict[str, Any]] = {}
+    for code, d in results.items():
+        x = d.pop("_x", None)
+        if x:
+            extras[code] = x
+
     stocks = sorted(results.values(), key=lambda d: d.get("mc", 0), reverse=True)
 
     # 기준일 = 가장 많은 종목의 최근 거래일 (휴장일·주말 보정)
@@ -624,15 +805,18 @@ def main() -> int:
             "periods": [p for p in PERIODS if p <= args.years],
             "bins": BINS,
             "rsi_period": RSI_PERIOD,
-            "source": "네이버 금융(일별 시세·연간 실적)·KRX 상장 목록(FinanceDataReader)",
+            "source": "네이버 금융(일별 시세·연간 실적·배당·공시·뉴스)·KRX 상장 목록(FinanceDataReader)",
             "universe": "코스피·코스닥 보통주 (ETF·ETN·스팩·리츠·우선주 제외)",
-            "units": {"price": "원", "marcap": "억원", "fin": "억원"},
+            "units": {"price": "원", "marcap": "억원", "fin": "억원", "dps": "원", "dy": "%"},
+            "extra": {"shards": EXTRA_SHARDS, "disc": DISC_LIMIT, "news": NEWS_LIMIT},
             "notes": [
                 "매물대는 최근 1~5년 일별 종가·거래량을 가격 20구간으로 나눠 누적한 분포입니다(화면에서 기간 전환).",
                 "누적 백분위는 현재가 이하 가격대에 쌓인 거래량 비율(낮을수록 매물대 하단)입니다.",
                 "평균단가는 선택한 기간 일별 종가의 거래량 가중평균(VWAP)입니다.",
                 "RSI(14)는 일별 종가 기준 와일더 방식입니다.",
                 "영업이익·순이익은 네이버 금융 연간 확정 실적(최근 3개 사업연도)입니다.",
+                "배당은 최근 확정 사업연도 주당배당금(dps)과 그 배당금을 현재가로 나눈 배당수익률(dy)입니다.",
+                "최근 공시·뉴스는 상세 화면에서만 지연 로드하며(data/extras/{n}.json), 네이버 금융 제공 기준입니다.",
             ],
         },
         "stocks": stocks,
@@ -654,6 +838,25 @@ def main() -> int:
     size_mb = os.path.getsize(out_path) / 1024 / 1024
     elapsed = time.time() - t_start
     log(f"저장 완료: {out_path} ({len(stocks):,}종목, {size_mb:.2f} MB)")
+
+    # 상세용 공시·뉴스: 16개 샤드 파일 (빈 샤드도 써서 404를 만들지 않는다)
+    extra_dir = os.path.join(os.path.dirname(os.path.abspath(out_path)), "extras")
+    os.makedirs(extra_dir, exist_ok=True)
+    shards: List[Dict[str, Dict[str, Any]]] = [{} for _ in range(EXTRA_SHARDS)]
+    for code, x in extras.items():
+        shards[shard_of(code)][code] = x
+    extra_bytes = 0
+    for i, sh in enumerate(shards):
+        p = os.path.join(extra_dir, f"{i}.json")
+        tmp_p = p + ".tmp"
+        with open(tmp_p, "w", encoding="utf-8") as f:
+            json.dump(sh, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp_p, p)
+        extra_bytes += os.path.getsize(p)
+    with_disc = sum(1 for x in extras.values() if x.get("d"))
+    with_news = sum(1 for x in extras.values() if x.get("n"))
+    log(f"상세 데이터: {extra_dir} ({len(extras):,}종목, {extra_bytes/1024/1024:.2f} MB, "
+        f"공시 있음 {with_disc:,} · 뉴스 있음 {with_news:,})")
     log(f"실패 로그: {failed_path} ({len(failed)}건)")
     log(f"총 소요 {elapsed/60:.1f}분")
 
