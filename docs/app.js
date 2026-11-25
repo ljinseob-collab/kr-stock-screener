@@ -11,7 +11,8 @@ const state = {
     market: 'all', profit: 'all', value: false, cum: 'all',
     vwap: false, rsiMin: null, rsiMax: null, q: '', sort: 'mc'
   },
-  preset: 'all'
+  preset: 'all',
+  period: 5       // 매물대 기준 기간(년): 1~5
 };
 
 /* ---------------- 포맷 ---------------- */
@@ -32,8 +33,50 @@ const fmtPct = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
 const signCls = v => (v === null || v === undefined) ? '' : (v > 0 ? 'pos' : (v < 0 ? 'neg' : ''));
 const mktName = m => (m === 'K' ? '코스피' : '코스닥');
 
-const pocGap = s => (s.poc ? (s.p / s.poc - 1) * 100 : null);
-const vwapGap = s => (s.vwap ? (s.p / s.vwap - 1) * 100 : null);
+const pocGap = s => { const v = vpOf(s); return (v && v.poc) ? (s.p / v.poc - 1) * 100 : null; };
+const vwapGap = s => { const v = vpOf(s); return (v && v.vwap) ? (s.p / v.vwap - 1) * 100 : null; };
+
+/* 선택 기간(1~5년)의 매물대 값. 해당 기간 거래가 없으면 null */
+function vpOf(s) {
+  if (s.vp) return s.vp[String(state.period)] || null;
+  return (s.poc === undefined && s.cum === undefined) ? null
+    : { poc: s.poc, vwap: s.vwap, bl: s.bl, bh: s.bh, bins: s.bins, cum: s.cum };
+}
+const cumOf = s => { const v = vpOf(s); return (v && v.cum !== undefined && v.cum !== null) ? v.cum : null; };
+
+/* 매물대 위치 3단계: 누적 30% 이하 바닥권 / 70% 초과 상단 / 그 사이 중간 */
+const posTier = cum => (cum === null || cum === undefined) ? null
+  : (cum <= 30 ? { key: 'low', dot: '🟢', label: '바닥권' }
+  : (cum <= 70 ? { key: 'mid', dot: '🟡', label: '중간' }
+  : { key: 'high', dot: '🔴', label: '상단' }));
+const posBadge = cum => {
+  const t = posTier(cum);
+  if (!t) return '<span class="pos-badge na">– 자료 없음</span>';
+  return `<span class="pos-badge ${t.key}">${t.dot} ${t.label}</span>`;
+};
+const gapCls = v => (v === null || v === undefined) ? '' : (v <= 0 ? 'good' : 'high');
+
+/* 실적 4색: 🟢 3년 흑자 · 🔵 흑자전환 · 🟡 최근 적자 · 🔴 계속 적자 */
+const FIN_TXT = { green: '3년 흑자', blue: '흑자전환', yellow: '최근 적자', red: '계속 적자' };
+const FIN_ICON = { green: '🟢', blue: '🔵', yellow: '🟡', red: '🔴' };
+const finState = (s, idx) => {          // idx: 1=영업이익, 2=당기순이익
+  const vals = (s.fin || []).map(r => r[idx]).filter(v => v !== null && v !== undefined);
+  if (!vals.length) return null;
+  const last = vals[vals.length - 1];
+  let key;
+  if (vals.every(v => v > 0)) key = 'green';
+  else if (last > 0) key = 'blue';                 // 이전 해에 적자가 있었는데 최근 흑자
+  else if (vals.some(v => v > 0)) key = 'yellow';  // 흑자였던 해가 있는데 최근 적자
+  else key = 'red';
+  const label = key === 'green' && vals.length < 3 ? `${vals.length}년 흑자` : FIN_TXT[key];
+  return { key, label, icon: FIN_ICON[key], years: vals.length };
+};
+const finBadge = (st, who, full, extraCls = '') => {
+  const tag = who ? `<b>${who}</b>` : '';
+  if (!st) return `<span class="fin-badge na ${extraCls}" title="${full} 3개년 확정 실적이 없습니다">${tag}–</span>`;
+  return `<span class="fin-badge ${st.key} ${extraCls}" title="${full}: ${st.label} (최근 ${st.years}개 사업연도 확정 실적)">` +
+    `${tag}${st.icon} ${st.label}</span>`;
+};
 
 /* ---------------- 데이터 로드 ---------------- */
 async function load() {
@@ -51,7 +94,7 @@ async function load() {
 function initMeta() {
   const m = state.meta;
   document.getElementById('status').textContent =
-    `기준일 ${m.as_of} · ${nf.format(m.count)}종목 · ${m.years}년 일봉`;
+    `기준일 ${m.as_of} · ${nf.format(m.count)}종목 · ${m.years}년 일봉 · 매물대 ${state.period}년`;
   document.getElementById('status').classList.remove('warn');
   document.getElementById('total').textContent = nf.format(m.count);
   document.getElementById('generated').textContent =
@@ -60,7 +103,7 @@ function initMeta() {
 
   const cnt = {
     all: state.all.length,
-    bottom: state.all.filter(s => (s.cum ?? 100) <= 30 && s.rsi > 0 && s.rsi <= 35).length,
+    bottom: state.all.filter(s => (cumOf(s) ?? 100) <= 30 && s.rsi > 0 && s.rsi <= 35).length,
     mine: state.all.filter(isMine).length
   };
   document.getElementById('cnt-all').textContent = nf.format(cnt.all);
@@ -69,8 +112,10 @@ function initMeta() {
 }
 
 function isMine(s) {
-  return s.op3 === 1 && s.pass === 1 && (s.cum ?? 100) <= 30
-    && s.vwap && s.p <= s.vwap && s.rsi > 0 && s.rsi <= 35;
+  const v = vpOf(s);
+  const op = finState(s, 1);
+  return !!op && op.key === 'green' && s.pass === 1 && (cumOf(s) ?? 100) <= 30
+    && v && v.vwap && s.p <= v.vwap && s.rsi > 0 && s.rsi <= 35;
 }
 
 /* ---------------- 필터 ---------------- */
@@ -79,17 +124,25 @@ function filterRows() {
   const q = f.q.trim().toLowerCase();
   let out = state.all.filter(s => {
     if (f.market !== 'all' && s.m !== f.market) return false;
-    if (f.profit === 'op3' && s.op3 !== 1) return false;
-    if (f.profit === 'ni3' && s.ni3 !== 1) return false;
+    if (f.profit !== 'all') {
+      const op = finState(s, 1);
+      const k = op ? op.key : null;
+      if (f.profit === 'op3' && k !== 'green') return false;
+      if (f.profit === 'turn' && k !== 'blue') return false;
+      if (f.profit === 'pos' && !(k === 'green' || k === 'blue')) return false;
+    }
     if (f.value && s.pass !== 1) return false;
     if (f.cum !== 'all') {
-      const c = s.cum;
-      if (c === undefined || c === null) return false;
+      const c = cumOf(s);
+      if (c === null) return false;
       if (f.cum === 'low' && c > 30) return false;
       if (f.cum === 'mid' && (c <= 30 || c >= 70)) return false;
       if (f.cum === 'high' && c < 70) return false;
     }
-    if (f.vwap && !(s.vwap && s.p <= s.vwap)) return false;
+    if (f.vwap) {
+      const v = vpOf(s);
+      if (!(v && v.vwap && s.p <= v.vwap)) return false;
+    }
     if (f.rsiMin !== null || f.rsiMax !== null) {
       if (!(s.rsi > 0)) return false;
       if (f.rsiMin !== null && s.rsi < f.rsiMin) return false;
@@ -101,8 +154,8 @@ function filterRows() {
 
   const sorters = {
     mc: (a, b) => (b.mc || 0) - (a.mc || 0),
-    cum: (a, b) => ((a.cum ?? 101) - (b.cum ?? 101)) || ((a.rsi ?? 101) - (b.rsi ?? 101)),
-    rsi: (a, b) => ((a.rsi ?? 101) - (b.rsi ?? 101)) || ((a.cum ?? 101) - (b.cum ?? 101)),
+    cum: (a, b) => ((cumOf(a) ?? 101) - (cumOf(b) ?? 101)) || ((a.rsi ?? 101) - (b.rsi ?? 101)),
+    rsi: (a, b) => ((a.rsi ?? 101) - (b.rsi ?? 101)) || ((cumOf(a) ?? 101) - (cumOf(b) ?? 101)),
     mult: (a, b) => ((a.mult ?? 1e9) - (b.mult ?? 1e9)) || ((b.mc || 0) - (a.mc || 0)),
     poc: (a, b) => ((pocGap(a) ?? 1e9) - (pocGap(b) ?? 1e9)),
     vwap: (a, b) => ((vwapGap(a) ?? 1e9) - (vwapGap(b) ?? 1e9)),
@@ -117,9 +170,10 @@ function filterRows() {
 
 /* ---------------- 렌더 ---------------- */
 function rowHtml(s) {
+  const vp = vpOf(s) || {};
   const pg = pocGap(s), vg = vwapGap(s);
-  const cum = s.cum ?? 0;
-  const cumCls = cum <= 30 ? 'low' : (cum >= 70 ? 'high' : '');
+  const cum = cumOf(s);
+  const cumTxt = cum === null || cum === undefined ? '–' : cum;
   const rsi = s.rsi;
   const rsiCls = rsi >= 70 ? 'hot' : (rsi <= 35 ? 'cold' : '');
   const rsiWidth = Math.max(2, Math.min(100, rsi || 0));
@@ -132,9 +186,8 @@ function rowHtml(s) {
     value = `<span class="badge na">–</span>`;
   }
 
-  const prof = `<div class="prof">` +
-    `<span class="${s.op3 === 1 ? 'on' : (s.op3 === 0 ? 'off' : '')}" title="최근 3개 사업연도 영업이익 연속 흑자">영익</span>` +
-    `<span class="${s.ni3 === 1 ? 'on' : (s.ni3 === 0 ? 'off' : '')}" title="최근 3개 사업연도 순이익 연속 흑자">순익</span></div>`;
+  const opSt = finState(s, 1), niSt = finState(s, 2);
+  const prof = `<div class="fin">${finBadge(opSt, '영익', '영업이익')}${finBadge(niSt, '순익', '당기순이익')}</div>`;
 
   const short = s.nd && s.nd < 250 ? `<span class="mini" title="상장 1년 미만: 매물대에 반영된 거래일이 ${s.nd}일뿐입니다">1년 미만</span>` : '';
   const stale = s.ld ? `<span class="mini" title="최근 거래일 ${s.ld}">거래정지?</span>` : '';
@@ -150,14 +203,13 @@ function rowHtml(s) {
       <div class="rsi"><span class="rsi-val ${rsiCls}">${rsi ? rsi.toFixed(1) : '–'}</span>
       <div class="rsi-track"><div class="rsi-fill" style="width:${rsiWidth}%"></div></div></div>
     </div>
-    <div class="cell num" data-label="매물대 위치">
-      <div class="cum"><span class="cum-val ${cumCls}">${cum}%</span>
-      <div class="cum-track"><div class="cum-fill" style="width:${Math.max(cum, 1.5)}%"></div></div></div>
+    <div class="cell num pos" data-label="매물대 위치" title="${state.period}년 거래량 누적 ${cumTxt}% · POC ${fmtInt(vp.poc)}원">
+      <div class="vp-pos">${posBadge(cum)}
+      <span class="pos-gap ${gapCls(pg)}">최대 매물대 ${fmtPct(pg)}</span></div>
     </div>
-    <div class="cell num" data-label="POC 괴리"><span class="${signCls(pg)}">${fmtPct(pg)}</span></div>
-    <div class="cell num" data-label="5년 평균 대비"><span class="${signCls(vg)}">${fmtPct(vg)}</span></div>
+    <div class="cell num" data-label="${state.period}년 평균 대비"><span class="${signCls(vg)}">${fmtPct(vg)}</span></div>
     <div class="cell num" data-label="영업익×10 vs 시총">${value}</div>
-    <div class="cell num" data-label="3년 흑자">${prof}</div>
+    <div class="cell num" data-label="실적 추이">${prof}</div>
   </div>`;
 }
 
@@ -185,9 +237,10 @@ function openDetail(code) {
   const s = state.all.find(x => x.c === code);
   if (!s) return;
   const d = document.getElementById('detail');
+  d.dataset.code = code;
   document.getElementById('d-name').textContent = s.n;
   document.getElementById('d-sub').textContent =
-    `${s.c} · ${mktName(s.m)} · 5년 거래일 ${nf.format(s.nd || 0)}일` + (s.ld ? ` · 최근 거래 ${s.ld}` : '');
+    `${s.c} · ${mktName(s.m)} · 일봉 ${nf.format(s.nd || 0)}일 · 매물대 ${state.period}년` + (s.ld ? ` · 최근 거래 ${s.ld}` : '');
   document.getElementById('d-body').innerHTML = detailHtml(s);
   d.hidden = false;
   document.body.style.overflow = 'hidden';
@@ -201,35 +254,42 @@ function closeDetail() {
 }
 
 function detailHtml(s) {
+  const vp = vpOf(s) || {};
   const pg = pocGap(s), vg = vwapGap(s);
-  const cum = s.cum ?? 0;
+  const cum = cumOf(s);
+  const cumTxt = cum === null ? '–' : cum;
+  const P = state.period;
 
   /* --- 통계 카드 --- */
   const stats = `
   <div class="price-row"><span class="big">${fmtInt(s.p)}</span><span class="unit">원 · 현재가</span></div>
   <div class="dstats">
+    <div class="dstat span2">
+      <div class="k">매물대 위치 <span class="muted">· ${P}년</span></div>
+      <div class="v">${posBadge(cum)}</div>
+      <div class="dsub ${gapCls(pg)}">최대 매물대 대비 ${fmtPct(pg)} <span class="muted">(누적 ${cumTxt}%)</span></div>
+    </div>
+    <div class="dstat"><div class="k">POC (최대 매물대)</div><div class="v">${fmtInt(vp.poc)}<small>원</small></div></div>
     <div class="dstat"><div class="k">시가총액</div><div class="v">${fmtEok(s.mc)}</div></div>
     <div class="dstat"><div class="k">RSI(14)</div><div class="v ${s.rsi >= 70 ? 'pos' : ''}">${s.rsi ? s.rsi.toFixed(1) : '–'}</div></div>
-    <div class="dstat"><div class="k">5년 매물대 누적</div><div class="v">${cum}%<small>${cum <= 30 ? '하단' : (cum >= 70 ? '상단' : '중간')}</small></div></div>
-    <div class="dstat"><div class="k">POC (최대 매물대)</div><div class="v">${fmtInt(s.poc)}<small>원</small></div></div>
-    <div class="dstat"><div class="k">POC 괴리</div><div class="v ${signCls(pg)}">${fmtPct(pg)}</div></div>
-    <div class="dstat"><div class="k">5년 평균단가</div><div class="v">${fmtInt(s.vwap)}<small>원·${fmtPct(vg)}</small></div></div>
+    <div class="dstat"><div class="k">${P}년 평균단가</div><div class="v">${fmtInt(vp.vwap)}<small>원·${fmtPct(vg)}</small></div></div>
   </div>`;
 
   /* --- 매물대 차트 --- */
-  const chart = s.bins && s.bins.length
-    ? `<div class="section-title">5년 매물대 <span class="hint">가로 막대 = 거래량 비중 · ${s.bins.length}구간</span></div>
+  const chart = vp.bins && vp.bins.length
+    ? `<div class="section-title">${P}년 매물대 <span class="hint">가로 막대 = 거래량 비중 · ${vp.bins.length}구간</span></div>
        <div class="vp">${vpSvg(s)}
          <div class="vp-legend">
            <span><i style="background:var(--cur)"></i>현재가</span>
            <span><i style="background:var(--poc)"></i>POC</span>
-           <span><i style="background:var(--vwap)"></i>5년 평균</span>
+           <span><i style="background:var(--vwap)"></i>${P}년 평균</span>
          </div>
        </div>`
     : '';
 
   /* --- 재무 --- */
   const fin = s.fin && s.fin.length ? s.fin : [];
+  const opSt = finState(s, 1), niSt = finState(s, 2);
   const years = fin.map(r => (s.fm && s.fm !== 12 ? `${r[0]}.${String(s.fm).padStart(2, '0')}` : `${r[0]}`));
   const finTable = fin.length ? `
     <table class="fin">
@@ -240,9 +300,6 @@ function detailHtml(s) {
       </tbody>
     </table>`
     : `<p class="muted" style="font-size:13px">연간 실적 데이터가 없습니다(신규 상장·자료 미제공 등).</p>`;
-
-  const flag = (v, label) => v === 1 ? `<span class="badge ok">${label} 3년 연속 흑자</span>`
-    : (v === 0 ? `<span class="badge no">${label} 흑자 아님</span>` : `<span class="badge na">${label} 3년치 부족</span>`);
 
   /* --- 시총 vs 영업이익×10 --- */
   const lastOp = fin.length ? fin[fin.length - 1][1] : null;
@@ -268,8 +325,8 @@ function detailHtml(s) {
 
   return `${stats}${chart}
     <div class="section-title">3년 실적 <span class="hint">네이버 금융 연간 확정 실적</span></div>
+    <div class="fin-detail"><span class="fin-k">영업이익</span>${finBadge(opSt, '', '영업이익', 'lg')}<span class="fin-k">순이익</span>${finBadge(niSt, '', '당기순이익', 'lg')}</div>
     ${finTable}
-    <div class="prof" style="justify-content:flex-start;margin-top:8px">${flag(s.op3, '영업이익')} ${flag(s.ni3, '순이익')}</div>
     <div class="section-title">시가총액 vs 영업이익×10</div>
     ${cmp}
     <div class="links">
@@ -277,16 +334,18 @@ function detailHtml(s) {
       <a href="https://finance.naver.com/item/coinfo.naver?code=${s.c}" target="_blank" rel="noopener">기업 실적 분석</a>
     </div>
     ${note.length ? `<p class="dnote">⚠ ${note.join(' ')}</p>` : ''}
-    <p class="dnote">매물대는 5년 일별 종가·거래량을 20개 가격대로 나눈 분포입니다. 현재가 이하 누적 비중이 낮을수록 위쪽 매물이 적은 하단 구간입니다. 투자 판단 전 공시로 다시 확인하세요.</p>`;
+    <p class="dnote">매물대는 최근 ${P}년 일별 종가·거래량을 20개 가격대로 나눈 분포입니다. 현재가 이하 누적 비중이 낮을수록 위쪽 매물이 적은 하단 구간입니다. 투자 판단 전 공시로 다시 확인하세요.</p>`;
 }
 
 /* 매물대 SVG: 가격은 세로축, 거래량 비중은 가로 막대 */
 function vpSvg(s) {
   const W = 470, H = 400;
   const L = 54, R = 74, T = 14, B = 16;
-  const bins = s.bins;
+  const vp = vpOf(s) || {};
+  const bins = vp.bins || [];
   const n = bins.length;
-  const lo = s.bl, hi = s.bh;
+  const lo = vp.bl, hi = vp.bh;
+  const P = state.period;
   const span = hi - lo || 1;
   const innerH = H - T - B;
   const innerW = W - L - R;
@@ -319,8 +378,8 @@ function vpSvg(s) {
   // 기준선 + 오른쪽 가격 라벨
   const marks = [];
   marks.push({ price: s.p, color: '#e11d48', label: priceLabel(s.p) });
-  if (s.poc) marks.push({ price: s.poc, color: '#d97706', label: priceLabel(s.poc) });
-  if (s.vwap) marks.push({ price: s.vwap, color: '#0284c7', label: priceLabel(s.vwap) });
+  if (vp.poc) marks.push({ price: vp.poc, color: '#d97706', label: priceLabel(vp.poc) });
+  if (vp.vwap) marks.push({ price: vp.vwap, color: '#0284c7', label: priceLabel(vp.vwap) });
 
   marks.forEach(m => {
     const y = yOf(m.price);
@@ -340,12 +399,35 @@ function vpSvg(s) {
 
   // 축
   g += `<line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="#d0d5dd" stroke-width="1"/>`;
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.n)} 5년 매물대 차트. 현재가 ${s.p}원, POC ${s.poc}원, 5년 평균단가 ${s.vwap}원">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.n)} ${P}년 매물대 차트. 현재가 ${s.p}원, POC ${vp.poc}원, ${P}년 평균단가 ${vp.vwap}원">${g}</svg>`;
 }
 
 function priceLabel(v) {
   if (v >= 10000) return Math.round(v / 10000) + '만';
   return nf.format(Math.round(v));
+}
+
+/* ---------------- 기간 전환 (1~5년) ---------------- */
+function setPeriod(p) {
+  if (!(p >= 1 && p <= 5) || state.period === p) return;
+  state.period = p;
+  document.querySelectorAll('.seg-btn[data-period]').forEach(b =>
+    b.classList.toggle('active', Number(b.dataset.period) === p));
+  updatePeriodLabels();
+  if (state.meta) initMeta();
+  filterRows();
+  const d = document.getElementById('detail');
+  if (!d.hidden && d.dataset.code) openDetail(d.dataset.code);
+}
+
+function updatePeriodLabels() {
+  const P = state.period;
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  set('lbl-cum', `${P}년 매물대 위치`);
+  set('lbl-vwap', `현재가 ≤ ${P}년 평균단가`);
+  set('lbl-sort-vwap', `${P}년 평균 대비 낮은 순`);
+  set('lbl-th-vwap', `${P}년 평균 대비`);
+  set('lbl-legend-vwap', `${P}년 평균`);
 }
 
 /* ---------------- 이벤트 ---------------- */
@@ -443,6 +525,9 @@ function refreshFiltersToggle() {
 }
 
 function bindEvents() {
+  document.querySelectorAll('.seg-btn[data-period]').forEach(btn =>
+    btn.addEventListener('click', () => setPeriod(Number(btn.dataset.period))));
+
   document.querySelectorAll('.preset').forEach(btn =>
     btn.addEventListener('click', () => applyPreset(btn.dataset.preset)));
 

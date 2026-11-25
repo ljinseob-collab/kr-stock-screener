@@ -41,7 +41,8 @@ import requests
 # 설정
 # ----------------------------------------------------------------------------
 
-YEARS = 5                 # 매물대/평균단가 산정 기간 (년)
+YEARS = 5                 # 최대 수집/산정 기간 (년)
+PERIODS = (1, 2, 3, 4, 5)  # 화면에서 전환할 매물대 기간 (년)
 BINS = 20                 # 매물대 가격 구간 수
 RSI_PERIOD = 14
 MIN_TRADING_DAYS = 20     # 지표 산출 최소 거래일 수
@@ -382,6 +383,44 @@ def volume_profile(rows: List[List[Any]], bins: int = BINS) -> Dict[str, Any]:
     }
 
 
+def vp_periods(rows: List[List[Any]], price: int,
+               max_years: int = YEARS) -> Dict[str, Dict[str, Any]]:
+    """1~max_years년 구간별 매물대(POC·VWAP·누적·가격범위·20구간 비중).
+
+    구간은 최근 거래일에서 N년 전 같은 날 이후의 거래일로 자른다(달력 기준).
+    상장 기간이 N년보다 짧으면 가진 거래일을 그대로 쓴다.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    as_of = datetime.strptime(rows[-1][0], "%Y%m%d").date()
+    for y in range(1, max_years + 1):
+        if y >= max_years:
+            sub = rows
+        else:
+            try:
+                cutoff = as_of.replace(year=as_of.year - y)
+            except ValueError:                      # 2/29 기준일 보정
+                cutoff = as_of.replace(year=as_of.year - y, day=28)
+            cs = cutoff.strftime("%Y%m%d")
+            sub = [r for r in rows if r[0] >= cs]
+            if len(sub) < MIN_TRADING_DAYS:          # 상장 직후: 가진 만큼
+                sub = rows
+        vp = volume_profile(sub)
+        if vp["poc"] is None:
+            continue
+        rec: Dict[str, Any] = {
+            "poc": int(round(vp["poc"])),
+            "vwap": int(round(vp["vwap"])),
+            "bl": int(round(vp["bin_lo"])),
+            "bh": int(round(vp["bin_hi"])),
+            "bins": [round(x, 1) for x in vp["shares"]],
+        }
+        cum = cum_below(price, vp)
+        if cum is not None:
+            rec["cum"] = int(round(cum))
+        out[str(y)] = rec
+    return out
+
+
 def cum_below(price: Optional[float], vp: Dict[str, Any]) -> Optional[float]:
     """현재가 이하 가격대에 쌓인 거래량 비율(%)."""
     if price is None or not vp["shares"]:
@@ -412,7 +451,7 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
 
     rows.sort(key=lambda r: r[0])
     price = int(round(rows[-1][1]))
-    vp = volume_profile(rows)
+    vps = vp_periods(rows, price)
     closes = [r[1] for r in rows]
 
     data: Dict[str, Any] = {
@@ -429,15 +468,12 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
     if rsi is not None:
         data["rsi"] = round(rsi, 1)
 
-    if vp["poc"] is not None:
-        data["poc"] = int(round(vp["poc"]))
-        data["vwap"] = int(round(vp["vwap"]))
-        data["bl"] = int(round(vp["bin_lo"]))
-        data["bh"] = int(round(vp["bin_hi"]))
-        data["bins"] = vp["shares"]
-        cum = cum_below(price, vp)
-        if cum is not None:
-            data["cum"] = int(round(cum))
+    if vps:
+        data["vp"] = vps                      # {"1": {...}, ..., "5": {...}}
+        base = vps.get(str(YEARS)) or vps[max(vps, key=int)]
+        data["poc"], data["vwap"] = base["poc"], base["vwap"]   # 기본(최대 기간) 값 하위 호환
+        if "cum" in base:
+            data["cum"] = base["cum"]
 
     if want_finance:
         fin = fetch_finance(row["code"])
@@ -585,15 +621,16 @@ def main() -> int:
             "count": len(stocks),
             "failed": len(failed),
             "years": args.years,
+            "periods": [p for p in PERIODS if p <= args.years],
             "bins": BINS,
             "rsi_period": RSI_PERIOD,
             "source": "네이버 금융(일별 시세·연간 실적)·KRX 상장 목록(FinanceDataReader)",
             "universe": "코스피·코스닥 보통주 (ETF·ETN·스팩·리츠·우선주 제외)",
             "units": {"price": "원", "marcap": "억원", "fin": "억원"},
             "notes": [
-                "매물대는 5년 일별 종가·거래량을 가격 20구간으로 나눠 누적한 분포입니다.",
+                "매물대는 최근 1~5년 일별 종가·거래량을 가격 20구간으로 나눠 누적한 분포입니다(화면에서 기간 전환).",
                 "누적 백분위는 현재가 이하 가격대에 쌓인 거래량 비율(낮을수록 매물대 하단)입니다.",
-                "5년 평균단가는 5년 일별 종가의 거래량 가중평균(VWAP)입니다.",
+                "평균단가는 선택한 기간 일별 종가의 거래량 가중평균(VWAP)입니다.",
                 "RSI(14)는 일별 종가 기준 와일더 방식입니다.",
                 "영업이익·순이익은 네이버 금융 연간 확정 실적(최근 3개 사업연도)입니다.",
             ],
