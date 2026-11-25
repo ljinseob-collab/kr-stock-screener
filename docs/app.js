@@ -34,6 +34,16 @@ const fmtDy = v => (v === null || v === undefined || Number.isNaN(v)) ? '–' : 
 const signCls = v => (v === null || v === undefined) ? '' : (v > 0 ? 'pos' : (v < 0 ? 'neg' : ''));
 const mktName = m => (m === 'K' ? '코스피' : '코스닥');
 
+/* 생성 시각을 한국 시간으로 (CI 러너는 UTC로 기록하므로 브라우저에서 KST로 변환) */
+function kstStamp(iso) {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return String(iso || '').replace('T', ' ').slice(0, 16);
+  const d = new Date(t + 9 * 3600 * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
 const pocGap = s => { const v = vpOf(s); return (v && v.poc) ? (s.p / v.poc - 1) * 100 : null; };
 const vwapGap = s => { const v = vpOf(s); return (v && v.vwap) ? (s.p / v.vwap - 1) * 100 : null; };
 
@@ -100,7 +110,7 @@ function initMeta() {
   document.getElementById('status').classList.remove('warn');
   document.getElementById('total').textContent = nf.format(m.count);
   document.getElementById('generated').textContent =
-    `데이터 생성 ${m.generated_at.replace('T', ' ').slice(0, 16)}` +
+    `데이터 생성 ${kstStamp(m.generated_at)}` +
     (m.failed ? ` · 상장 직후 등으로 데이터가 부족한 ${m.failed}종목 제외` : '');
 
   const cnt = {

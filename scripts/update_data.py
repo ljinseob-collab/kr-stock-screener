@@ -38,7 +38,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -798,7 +798,7 @@ def main() -> int:
     payload = {
         "meta": {
             "as_of": f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:8]}",
-            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "generated_at": datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds"),
             "count": len(stocks),
             "failed": len(failed),
             "years": args.years,
