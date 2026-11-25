@@ -89,10 +89,10 @@ jobs:
           exit 1
 
       - name: Pages 아티팩트 업로드
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs
 
       - name: Pages 배포
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
