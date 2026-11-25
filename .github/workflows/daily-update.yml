@@ -1,0 +1,89 @@
+name: 매물대 스크리너 데이터 갱신
+
+on:
+  schedule:
+    # 평일 17:00 KST (08:00 UTC) — 장 마감 후
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '테스트용: 시총 상위 N개만 수집 (비우면 전체)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write      # docs/data 커밋
+  pages: write         # GitHub Pages 배포
+  id-token: write      # deploy-pages OIDC
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Pages 사이트 준비 (아직 꺼져 있으면 자동 활성화 시도)
+        continue-on-error: true
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 데이터 수집 (5년 매물대·실적·시총)
+        run: |
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            python scripts/update_data.py --workers 10 --limit ${{ github.event.inputs.limit }}
+          else
+            python scripts/update_data.py --workers 10
+          fi
+
+      - name: 수집 결과 요약
+        run: |
+          python - <<'PY'
+          import json, os
+          p = 'docs/data/stocks.json'
+          d = json.load(open(p, encoding='utf-8'))
+          m = d['meta']
+          print(f"기준일 {m['as_of']} · {m['count']}종목 · 실패 {m['failed']} · {os.path.getsize(p)/1024/1024:.2f} MB")
+          PY
+
+      - name: 데이터 커밋
+        if: vars.SKIP_DATA_COMMIT != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data/stocks.json docs/data/failed.json
+          if git diff --cached --quiet; then
+            echo "변경 없음"
+          else
+            git commit -m "data: $(date -u +%Y-%m-%d) 매물대 스크리너 데이터 갱신"
+            git push
+          fi
+
+      - name: Pages 아티팩트 업로드
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Pages 배포
+        id: deploy
+        uses: actions/deploy-pages@v4
