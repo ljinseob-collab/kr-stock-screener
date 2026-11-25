@@ -51,17 +51,20 @@
 ## 처음 배포하기
 
 1. 이 폴더를 GitHub 저장소 루트로 푸시합니다.
-2. 저장소 **Settings → Pages → Build and deployment → Source**를 **GitHub Actions**로 바꿉니다.
+2. 저장소 **Settings → Pages → Build and deployment → Source**를 **Deploy from a branch**로,
+   브랜치 **`main`**, 폴더 **`/docs`** 로 지정하고 **Save**를 누릅니다.
 3. **Actions → 매물대 스크리너 데이터 갱신 → Run workflow**로 한 번 수동 실행합니다.
-   - 첫 실행이 데이터를 만들고 `docs/data/`를 커밋한 뒤 Pages에 배포합니다.
+   - 실행이 `docs/data/`를 갱신·커밋하면 Pages가 그 커밋으로 사이트를 다시 빌드합니다.
    - 테스트로 적은 종목만 돌려보려면 `limit`에 `50`을 넣습니다.
-4. 배포가 끝나면 `https://<아이디>.github.io/<저장소>/` 로 열립니다.
+4. 잠시 뒤 `https://<아이디>.github.io/<저장소>/` 로 열립니다.
 
 이후 평일 17:00 KST(08:00 UTC)에 자동으로 갱신됩니다.
 
-> 데이터를 매일 커밋하면 저장소가 하루 약 1MB씩 커집니다. 커밋 없이 페이지만 배포하려면
-> 저장소 **Settings → Variables → Actions**에 `SKIP_DATA_COMMIT = true`를 추가하세요.
-> (그 경우 데이터는 배포 아티팩트로만 올라가고 저장소에는 남지 않습니다.)
+> 데이터를 매일 커밋하면 저장소가 하루 약 1MB씩 커집니다. 갱신은 하되 커밋은 남기지 않으려면
+> 워크플로우의 "데이터 커밋" 스텝을 빼고, 배포용 아티팩트 업로드·배포 스텝을 추가하면 됩니다.
+
+> `pip` 환경에 따라 `FinanceDataReader`(대문자) 이름은 인덱스에서 찾지 못합니다.
+> `requirements.txt`는 소문자 `finance-datareader`로 고정해 두었습니다.
 
 ## 로컬에서 돌려보기
 
