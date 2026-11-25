@@ -68,7 +68,8 @@ const finState = (s, idx) => {          // idx: 1=영업이익, 2=당기순이�
   else if (last > 0) key = 'blue';                 // 이전 해에 적자가 있었는데 최근 흑자
   else if (vals.some(v => v > 0)) key = 'yellow';  // 흑자였던 해가 있는데 최근 적자
   else key = 'red';
-  const label = key === 'green' && vals.length < 3 ? `${vals.length}년 흑자` : FIN_TXT[key];
+  const label = key === 'green' && vals.length < 3 ? `${vals.length}년 흑자`
+    : (key === 'red' && vals.length < 3 ? '적자' : FIN_TXT[key]);
   return { key, label, icon: FIN_ICON[key], years: vals.length };
 };
 const finBadge = (st, who, full, extraCls = '') => {
