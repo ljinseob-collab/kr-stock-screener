@@ -467,6 +467,8 @@ a.ri .ri-t{color:var(--ink-2)}
   .topbar-inner{padding:10px 14px}
   .brand h1{font-size:17px}
   .tagline{display:none}
+  /* 상단 상태 줄이 길어 화면 밖으로 밀리지 않게 줄바꿈 허용 */
+  .status{white-space:normal;font-size:11.5px;line-height:1.35;padding:5px 10px}
   .presets{
     flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
     margin:0 -12px 12px;padding:0 12px 4px;scrollbar-width:none;
