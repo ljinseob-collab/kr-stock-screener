@@ -2,6 +2,7 @@
 'use strict';
 
 const PAGE = 60;
+const WATCH_KEY = 'krscreener.watch.v1';   // ⭐ 관심종목 (이 브라우저에만 저장)
 const state = {
   all: [],        // 전체 종목
   rows: [],       // 필터·정렬 결과
@@ -9,10 +10,12 @@ const state = {
   meta: null,
   filters: {
     market: 'all', profit: 'all', value: false, cum: 'all',
-    vwap: false, rsiMin: null, rsiMax: null, div: false, q: '', sort: 'mc'
+    vwap: false, rsiMin: null, rsiMax: null, div: false, divMin: 0, q: '', sort: 'mc'
   },
   preset: 'all',
-  period: 5       // 매물대 기준 기간(년): 1~5
+  period: 5,      // 매물대 기준 기간(년): 1~5
+  watch: new Set(),   // 관심종목 코드
+  watchOnly: false    // ⭐ 관심종목만 보기
 };
 
 /* ---------------- 포맷 ---------------- */
@@ -31,6 +34,8 @@ function fmtEok(v) {
 const fmtPct = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
   : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
 const fmtDy = v => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(2) + '%';
+const fmtChg = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
+  : (v > 0 ? '+' : '') + v.toFixed(2) + '%';
 const signCls = v => (v === null || v === undefined) ? '' : (v > 0 ? 'pos' : (v < 0 ? 'neg' : ''));
 const mktName = m => (m === 'K' ? '코스피' : '코스닥');
 
@@ -97,6 +102,7 @@ async function load() {
   const data = await res.json();
   state.meta = data.meta;
   state.all = data.stocks || [];
+  loadWatch();
   initMeta();
   initFilterToggle();
   applyPreset('all');
@@ -106,7 +112,8 @@ async function load() {
 function initMeta() {
   const m = state.meta;
   document.getElementById('status').textContent =
-    `기준일 ${m.as_of} · ${nf.format(m.count)}종목 · ${m.years}년 일봉 · 매물대 ${state.period}년`;
+    `기준일 ${m.as_of} · ${nf.format(m.count)}종목 · ${m.years}년 일봉 · 매물대 ${state.period}년` +
+    (m.k200_count ? ` · 코스피200 ${nf.format(m.k200_count)}` : '');
   document.getElementById('status').classList.remove('warn');
   document.getElementById('total').textContent = nf.format(m.count);
   document.getElementById('generated').textContent =
@@ -121,6 +128,67 @@ function initMeta() {
   document.getElementById('cnt-all').textContent = nf.format(cnt.all);
   document.getElementById('cnt-bottom').textContent = nf.format(cnt.bottom);
   document.getElementById('cnt-mine').textContent = nf.format(cnt.mine);
+  updateWatchCount();
+}
+
+/* ---------------- ⭐ 관심종목 ---------------- */
+function loadWatch() {
+  try {
+    const a = JSON.parse(localStorage.getItem(WATCH_KEY) || '[]');
+    state.watch = new Set(Array.isArray(a) ? a.filter(c => typeof c === 'string') : []);
+  } catch (e) {
+    state.watch = new Set();
+  }
+}
+
+function saveWatch() {
+  try { localStorage.setItem(WATCH_KEY, JSON.stringify([...state.watch])); } catch (e) { /* 저장 불가(사생활 모드 등) */ }
+}
+
+function updateWatchCount() {
+  const el = document.getElementById('cnt-watch');
+  if (!el) return;
+  const n = state.all.filter(s => state.watch.has(s.c)).length;
+  el.textContent = nf.format(n);
+}
+
+function starBtn(code, extra) {
+  const on = state.watch.has(code);
+  const label = on ? '관심종목에서 빼기' : '관심종목에 추가';
+  return `<button type="button" class="star-btn${extra ? ' ' + extra : ''}${on ? ' on' : ''}"` +
+    ` data-star="${code}" aria-pressed="${on}" title="${label}" aria-label="${label}">` +
+    `<span class="star-ico" aria-hidden="true">${on ? '★' : '☆'}</span></button>`;
+}
+
+/* 같은 종목의 별 버튼(목록·상세)을 모두 같은 상태로 맞춘다 */
+function refreshStars(code) {
+  const on = state.watch.has(code);
+  const label = on ? '관심종목에서 빼기' : '관심종목에 추가';
+  document.querySelectorAll(`[data-star="${code}"]`).forEach(b => {
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    const ic = b.querySelector('.star-ico');
+    if (ic) ic.textContent = on ? '★' : '☆';
+  });
+}
+
+function toggleWatch(code) {
+  if (!code) return;
+  if (state.watch.has(code)) state.watch.delete(code); else state.watch.add(code);
+  saveWatch();
+  refreshStars(code);
+  updateWatchCount();
+  if (state.watchOnly) filterRows();
+}
+
+function setWatchOnly(on) {
+  state.watchOnly = !!on;
+  const b = document.getElementById('f-watch');
+  if (!b) return;
+  b.classList.toggle('on', state.watchOnly);
+  b.setAttribute('aria-pressed', state.watchOnly ? 'true' : 'false');
 }
 
 function isMine(s) {
@@ -135,7 +203,8 @@ function filterRows() {
   const f = state.filters;
   const q = f.q.trim().toLowerCase();
   let out = state.all.filter(s => {
-    if (f.market !== 'all' && s.m !== f.market) return false;
+    if (f.market === 'K200') { if (s.k200 !== 1) return false; }
+    else if (f.market !== 'all' && s.m !== f.market) return false;
     if (f.profit !== 'all') {
       const op = finState(s, 1);
       const k = op ? op.key : null;
@@ -162,6 +231,8 @@ function filterRows() {
     }
     if (q && !(s.n.toLowerCase().includes(q) || s.c.includes(q))) return false;
     if (f.div && !(s.dps > 0)) return false;
+    if (f.divMin > 0 && !((s.dy ?? 0) >= f.divMin)) return false;
+    if (state.watchOnly && !state.watch.has(s.c)) return false;
     return true;
   });
 
@@ -206,12 +277,17 @@ function rowHtml(s) {
   const short = s.nd && s.nd < 250 ? `<span class="mini" title="상장 1년 미만: 매물대에 반영된 거래일이 ${s.nd}일뿐입니다">1년 미만</span>` : '';
   const stale = s.ld ? `<span class="mini" title="최근 거래일 ${s.ld}">거래정지?</span>` : '';
 
+  const chg = (typeof s.chg === 'number') ? s.chg : null;
+  const chgHtml = chg === null ? ''
+    : `<span class="chg ${signCls(chg)}" title="전일 종가 대비 등락률">${fmtChg(chg)}</span>`;
+
   return `<div class="row" data-code="${s.c}" role="row" tabindex="0">
+    <div class="cell star">${starBtn(s.c)}</div>
     <div class="cell name">
-      <div class="name-line"><span class="stock-name">${esc(s.n)}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${short}${stale}</div>
+      <div class="name-line"><span class="stock-name">${esc(s.n)}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${s.k200 === 1 ? '<span class="mkt k200">K200</span>' : ''}${short}${stale}</div>
       <div class="code-line">${s.c}</div>
     </div>
-    <div class="cell num" data-label="현재가"><span class="price">${fmtInt(s.p)}</span></div>
+    <div class="cell num price-cell" data-label="현재가"><span class="price">${fmtInt(s.p)}</span>${chgHtml}</div>
     <div class="cell num" data-label="시가총액">${fmtEok(s.mc)}</div>
     <div class="cell num div-cell" data-label="배당" title="${s.dps > 0 ? `${s.dvy}년 주당배당금 ${fmtInt(s.dps)}원 ÷ 현재가` : '최근 사업연도 배당 없음'}">
       <span class="div-y ${s.dy >= 3 ? 'hi' : ''}">${fmtDy(s.dy)}</span>
@@ -336,19 +412,28 @@ function renderExtras(code, x, failed) {
 }
 
 /* ---------------- 상세 패널 ---------------- */
-function openDetail(code) {
+/* keepPos: 기간만 바꿀 때처럼 상세를 다시 그릴 때 스크롤·포커스를 건드리지 않는다 */
+function openDetail(code, keepPos) {
   const s = state.all.find(x => x.c === code);
   if (!s) return;
   const d = document.getElementById('detail');
+  const wasOpen = !d.hidden && d.dataset.code === code;
   d.dataset.code = code;
   document.getElementById('d-name').textContent = s.n;
   document.getElementById('d-sub').textContent =
-    `${s.c} · ${mktName(s.m)} · 일봉 ${nf.format(s.nd || 0)}일 · 매물대 ${state.period}년` + (s.ld ? ` · 최근 거래 ${s.ld}` : '');
+    `${s.c} · ${mktName(s.m)}${s.k200 === 1 ? ' · 코스피200' : ''} · 일봉 ${nf.format(s.nd || 0)}일 · 매물대 ${state.period}년` +
+    (s.ld ? ` · 최근 거래 ${s.ld}` : '');
+  const star = document.getElementById('d-star');
+  if (star) star.dataset.star = code;
+  refreshStars(code);
+  syncPeriodBtns();
   document.getElementById('d-body').innerHTML = detailHtml(s);
   d.hidden = false;
   document.body.style.overflow = 'hidden';
-  d.querySelector('.detail-panel').scrollTop = 0;
-  d.querySelector('.close').focus({ preventScroll: true });
+  if (!keepPos && !wasOpen) {
+    d.querySelector('.detail-panel').scrollTop = 0;
+    d.querySelector('.close').focus({ preventScroll: true });
+  }
   loadExtras(s);
 }
 
@@ -365,8 +450,12 @@ function detailHtml(s) {
   const P = state.period;
 
   /* --- 통계 카드 --- */
+  const chg = (typeof s.chg === 'number') ? s.chg : null;
+  const chgTag = chg === null ? ''
+    : `<span class="dchg ${signCls(chg)}">${fmtChg(chg)}</span><span class="dchg-lbl">전일 대비</span>`;
+
   const stats = `
-  <div class="price-row"><span class="big">${fmtInt(s.p)}</span><span class="unit">원 · 현재가</span></div>
+  <div class="price-row"><span class="big">${fmtInt(s.p)}</span><span class="unit">원 · 현재가</span>${chgTag}</div>
   <div class="dstats">
     <div class="dstat span2">
       <div class="k">매물대 위치 <span class="muted">· ${P}년</span></div>
@@ -476,8 +565,8 @@ function vpSvg(s) {
   for (let i = 0; i <= n; i += 5) {
     const price = lo + span * i / n;
     const y = yOf(price);
-    g += `<line x1="${L}" x2="${W - R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#eef1f6" stroke-width="1"/>`;
-    g += `<text x="${L - 6}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#98a2b3">${priceLabel(price)}</text>`;
+    g += `<line x1="${L}" x2="${W - R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--chart-grid)" stroke-width="1"/>`;
+    g += `<text x="${L - 6}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--chart-label)">${priceLabel(price)}</text>`;
   }
   // 막대
   const pocIdx = bins.indexOf(Math.max(...bins));
@@ -486,17 +575,17 @@ function vpSvg(s) {
     const y = yBin(i) + rowH * 0.16;
     const h = rowH * 0.68;
     const isPoc = i === pocIdx;
-    g += `<rect x="${L}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${isPoc ? '#f59e0b' : '#6366f1'}" opacity="${isPoc ? 0.9 : 0.5}"/>`;
+    g += `<rect x="${L}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${isPoc ? 'var(--chart-poc)' : 'var(--chart-bar)'}" opacity="${isPoc ? 0.9 : 0.5}"/>`;
     if (w > 40) {
-      g += `<text x="${(L + w - 5).toFixed(1)}" y="${(y + h * 0.75).toFixed(1)}" text-anchor="end" font-size="9.5" fill="${isPoc ? '#7c3a00' : '#3730a3'}">${share.toFixed(0)}%</text>`;
+      g += `<text x="${(L + w - 5).toFixed(1)}" y="${(y + h * 0.75).toFixed(1)}" text-anchor="end" font-size="9.5" fill="${isPoc ? 'var(--chart-poc-text)' : 'var(--chart-bar-text)'}">${share.toFixed(0)}%</text>`;
     }
   });
 
   // 기준선 + 오른쪽 가격 라벨
   const marks = [];
-  marks.push({ price: s.p, color: '#e11d48', label: priceLabel(s.p) });
-  if (vp.poc) marks.push({ price: vp.poc, color: '#d97706', label: priceLabel(vp.poc) });
-  if (vp.vwap) marks.push({ price: vp.vwap, color: '#0284c7', label: priceLabel(vp.vwap) });
+  marks.push({ price: s.p, color: 'var(--cur)', label: priceLabel(s.p) });
+  if (vp.poc) marks.push({ price: vp.poc, color: 'var(--poc-mark)', label: priceLabel(vp.poc) });
+  if (vp.vwap) marks.push({ price: vp.vwap, color: 'var(--vwap-mark)', label: priceLabel(vp.vwap) });
 
   marks.forEach(m => {
     const y = yOf(m.price);
@@ -515,7 +604,7 @@ function vpSvg(s) {
   });
 
   // 축
-  g += `<line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="#d0d5dd" stroke-width="1"/>`;
+  g += `<line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="var(--line)" stroke-width="1"/>`;
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.n)} ${P}년 매물대 차트. 현재가 ${s.p}원, POC ${vp.poc}원, ${P}년 평균단가 ${vp.vwap}원">${g}</svg>`;
 }
 
@@ -525,16 +614,23 @@ function priceLabel(v) {
 }
 
 /* ---------------- 기간 전환 (1~5년) ---------------- */
+function syncPeriodBtns() {
+  document.querySelectorAll('.seg-btn[data-period], .seg-btn[data-dperiod]').forEach(b => {
+    const p = Number(b.dataset.period || b.dataset.dperiod);
+    b.classList.toggle('active', p === state.period);
+  });
+}
+
+/* 목록·상세 화면의 기간 버튼을 함께 바꾸고 현재 화면을 다시 그린다 */
 function setPeriod(p) {
   if (!(p >= 1 && p <= 5) || state.period === p) return;
   state.period = p;
-  document.querySelectorAll('.seg-btn[data-period]').forEach(b =>
-    b.classList.toggle('active', Number(b.dataset.period) === p));
+  syncPeriodBtns();
   updatePeriodLabels();
   if (state.meta) initMeta();
   filterRows();
   const d = document.getElementById('detail');
-  if (!d.hidden && d.dataset.code) openDetail(d.dataset.code);
+  if (!d.hidden && d.dataset.code) openDetail(d.dataset.code, true);
 }
 
 function updatePeriodLabels() {
@@ -558,6 +654,7 @@ function readFilters() {
   f.div = document.getElementById('f-div').checked;
   f.q = document.getElementById('f-q').value;
   f.sort = document.getElementById('f-sort').value;
+  f.divMin = Number(document.getElementById('f-divmin').value) || 0;
   const mn = document.getElementById('f-rsi-min').value;
   const mx = document.getElementById('f-rsi-max').value;
   f.rsiMin = mn === '' ? null : Number(mn);
@@ -582,7 +679,8 @@ function activeFilterCount() {
   if (f.cum !== 'all') n++;
   if (f.vwap) n++;
   if (f.div) n++;
-  if (f.rsiMin !== null || f.rsiMax !== null) n++;
+  if (f.divMin > 0) n++;
+  if (f.rsiMin !== null || f.rsiMax !== null) n++;   // 배당률 조건은 '상세 조건' 안에 있다
   if (f.q.trim()) n++;
   return n;
 }
@@ -603,17 +701,21 @@ function applyPreset(p, doRender = true) {
   const check = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
   if (p === 'all') {
     set('f-market', 'all'); set('f-profit', 'all'); check('f-value', false);
-    set('f-cum', 'all'); check('f-vwap', false); check('f-div', false); set('f-q', '');
+    set('f-cum', 'all'); check('f-vwap', false); check('f-div', false); set('f-divmin', '0');
+    set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '');
   } else if (p === 'bottom') {
     set('f-market', 'all'); set('f-profit', 'all'); check('f-value', false);
-    set('f-cum', 'low'); check('f-vwap', false); check('f-div', false); set('f-q', '');
+    set('f-cum', 'low'); check('f-vwap', false); check('f-div', false); set('f-divmin', '0');
+    set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '35');
   } else if (p === 'mine') {
     set('f-market', 'all'); set('f-profit', 'op3'); check('f-value', true);
-    set('f-cum', 'low'); check('f-vwap', true); check('f-div', false); set('f-q', '');
+    set('f-cum', 'low'); check('f-vwap', true); check('f-div', false); set('f-divmin', '0');
+    set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '35');
   }
+  setWatchOnly(false);
   setPreset(p);
   readFilters();
   if (doRender) filterRows();
@@ -625,7 +727,7 @@ function initFilterToggle() {
   const box = document.getElementById('filters');
   const btn = document.getElementById('toggle-filters');
   if (!box || !btn) return;
-  if (window.innerWidth < 900) box.classList.add('collapsed');
+  box.classList.add('collapsed');     // 처음에는 항상 접힌 상태 (표가 바로 보이게)
   btn.addEventListener('click', () => {
     box.classList.toggle('collapsed');
     refreshFiltersToggle();
@@ -639,8 +741,10 @@ function refreshFiltersToggle() {
   if (!box || !btn) return;
   const open = !box.classList.contains('collapsed');
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  btn.querySelector('.chev').textContent = open ? '▲' : '▼';
-  btn.firstChild.textContent = open ? '접기 ' : '상세 조건 ';
+  const chev = btn.querySelector('.chev');
+  if (chev) chev.textContent = open ? '▲' : '▼';
+  const lbl = btn.querySelector('.qb-more-lbl');
+  if (lbl) lbl.textContent = open ? '상세 조건 접기' : '상세 조건';
 }
 
 function bindEvents() {
@@ -650,10 +754,31 @@ function bindEvents() {
   document.querySelectorAll('.preset').forEach(btn =>
     btn.addEventListener('click', () => applyPreset(btn.dataset.preset)));
 
-  ['f-market', 'f-profit', 'f-cum', 'f-sort'].forEach(id =>
+  ['f-market', 'f-profit', 'f-cum', 'f-sort', 'f-divmin'].forEach(id =>
     document.getElementById(id).addEventListener('change', () => { setPreset(''); readFilters(); filterRows(); }));
   ['f-value', 'f-vwap', 'f-div'].forEach(id =>
     document.getElementById(id).addEventListener('change', () => { setPreset(''); readFilters(); filterRows(); }));
+
+  /* ⭐ 관심종목만 보기 */
+  document.getElementById('f-watch').addEventListener('click', () => {
+    setWatchOnly(!state.watchOnly);
+    filterRows();
+  });
+
+  /* 별 버튼(목록·상세 공통) — 행 클릭으로 상세가 열리지 않게 먼저 처리한다 */
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-star]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleWatch(b.dataset.star);
+  }, true);
+
+  /* 상세 화면 안의 기간 버튼 (1~5년) */
+  document.getElementById('d-period').addEventListener('click', e => {
+    const b = e.target.closest('[data-dperiod]');
+    if (b) setPeriod(Number(b.dataset.dperiod));
+  });
 
   let t = null;
   document.getElementById('f-q').addEventListener('input', () => {
@@ -676,6 +801,7 @@ function bindEvents() {
   document.getElementById('reset').addEventListener('click', () => applyPreset('all'));
 
   document.getElementById('rows').addEventListener('click', e => {
+    if (e.target.closest('[data-star]')) return;
     const row = e.target.closest('.row');
     if (row) openDetail(row.dataset.code);
   });

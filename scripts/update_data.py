@@ -62,6 +62,9 @@ UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
 DAILY_URL = ("https://api.finance.naver.com/siseJson.naver"
              "?symbol={code}&requestType=1&startTime={start}&endTime={end}&timeframe=day")
 FIN_URL = "https://m.stock.naver.com/api/stock/{code}/finance/annual"
+# 코스피200 구성종목 (네이버 금융 지수 구성종목 API, 20종목/페이지)
+K200_URL = "https://m.stock.naver.com/api/index/KPI200/enrollStocks?page={page}"
+K200_MAX_PAGES = 15
 DISC_URL = "https://m.stock.naver.com/api/stock/{code}/disclosure"
 NEWS_URL = "https://m.stock.naver.com/api/news/stock/{code}?pageSize=20&page=1"
 
@@ -146,8 +149,65 @@ def with_retry(fn, tries: int = 4, base_delay: float = 0.7, what: str = ""):
 # 1) 상장 종목 + 시가총액
 # ----------------------------------------------------------------------------
 
-def load_universe(log) -> List[Dict[str, Any]]:
+def fetch_kospi200(log) -> Dict[str, str]:
+    """코스피200 구성종목 {종목코드: 종목명}.
+
+    네이버 금융 지수 구성종목 API(m.stock.naver.com/api/index/KPI200/enrollStocks)는
+    한 페이지에 20종목씩 돌려준다. 페이지를 비울 때까지 이어 붙인다.
+    """
+    def one_page(page: int) -> List[Dict[str, Any]]:
+        def one():
+            r = http_get(K200_URL.format(page=page))
+            if r.status_code == 429:
+                raise HttpError("429 rate limited")
+            if r.status_code != 200:
+                raise HttpError(f"HTTP {r.status_code}")
+            arr = r.json()
+            if not isinstance(arr, list):
+                raise HttpError("코스피200 응답 형식 오류")
+            return arr
+
+        return with_retry(one, tries=3, base_delay=0.8)
+
+    def collect() -> Dict[str, str]:
+        got: Dict[str, str] = {}
+        for page in range(1, K200_MAX_PAGES + 1):
+            try:
+                arr = one_page(page)
+            except Exception as exc:  # noqa: BLE001 - 실패 페이지는 건너뛴다
+                log(f"  ! 코스피200 {page}페이지 실패: {exc}")
+                continue
+            if not arr:              # 빈 페이지 = 끝
+                break
+            for it in arr:
+                code = str(it.get("itemCode") or "").strip()
+                name = str(it.get("stockName") or "").strip()
+                # 신형 종목코드(0126Z0 등 영문 포함 6자리)도 포함한다
+                if re.fullmatch(r"[0-9A-Z]{6}", code):
+                    got.setdefault(code, name)
+        return got
+
+    # 페이지가 일시적으로 짧게 오는 경우가 있어(199개) 200개 미만이면 최대 3번 더
+    # 훑어 합칩(nums). 정상 응답은 201개(20×10 + 1)다.
+    out: Dict[str, str] = {}
+    for attempt in range(3):
+        got = collect()
+        merged = dict(out)
+        merged.update(got)
+        if len(merged) > len(out):
+            out = merged
+        if len(out) >= 200:
+            break
+        if attempt < 2:
+            log(f"  코스피200 {len(out)}개로 짧아 다시 확인")
+    log(f"코스피200 구성종목 {len(out)}개 수신")
+    return out
+
+
+def load_universe(log, k200: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     import FinanceDataReader as fdr
+
+    k200 = k200 or {}
 
     def fetch():
         df = fdr.StockListing("KRX")
@@ -184,7 +244,10 @@ def load_universe(log) -> List[Dict[str, Any]]:
         if RE_REIT.search(name):
             excluded["reit"] += 1
             continue
-        if RE_ETC_FUND.search(name) or RE_ETF_BRAND.search(name) or name in FUND_NAMES:
+        # 코스피200 구성종목은 실제 상장 기업의 보통주이므로 이름 기반 ETF/펀드
+        # 제외 규칙에서 빼준다 (예: 'BNK금융지주'가 ETF 브랜드 'BNK'에 걸리던 문제).
+        if code not in k200 and (RE_ETC_FUND.search(name) or RE_ETF_BRAND.search(name)
+                                 or name in FUND_NAMES):
             excluded["fund"] += 1
             continue
 
@@ -203,9 +266,15 @@ def load_universe(log) -> List[Dict[str, Any]]:
             "market": "KOSPI" if market == "KOSPI" else "KOSDAQ",
             "marcap_eok": int(round(marcap / 1e8)),          # 원 → 억원
             "listing_close": int(close) if close and close == close else None,
+            "k200": 1 if code in k200 else 0,
         })
 
     log("제외 내역: " + ", ".join(f"{k} {v:,}" for k, v in excluded.items()))
+    if k200:
+        matched = sum(1 for r in rows if r["k200"])
+        log(f"코스피200 매칭 {matched:,}개 / 수신 {len(k200):,}개")
+        if not 190 <= matched <= 210:
+            log(f"  ! 코스피200 매칭 수가 예상(약 200)과 다릅니다: {matched}")
     rows.sort(key=lambda r: r["marcap_eok"], reverse=True)
     return rows
 
@@ -594,6 +663,7 @@ def cum_below(price: Optional[float], vp: Dict[str, Any]) -> Optional[float]:
 
 def build_stock(row: Dict[str, Any], start: str, end: str,
                 want_finance: bool = True, want_extras: bool = True) -> Dict[str, Any]:
+    """종목 1개 수집·계산. 결과 딕셔너리에 k200(코스피200 여부)·chg(전일 대비 %)를 담는다."""
     rows = fetch_daily(row["code"], start, end)
     if len(rows) < MIN_TRADING_DAYS:
         raise HttpError(f"거래일 부족({len(rows)}일)", retryable=False)
@@ -603,6 +673,11 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
     vps = vp_periods(rows, price)
     closes = [r[1] for r in rows]
 
+    # 전일(직전 거래일) 종가 대비 등락률(%) — 소수점 2자리
+    chg: Optional[float] = None
+    if len(rows) >= 2 and rows[-2][1] > 0:
+        chg = round((rows[-1][1] / rows[-2][1] - 1.0) * 100.0, 2)
+
     data: Dict[str, Any] = {
         "c": row["code"],
         "n": row["name"],
@@ -611,6 +686,10 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
         "mc": row["marcap_eok"],
         "nd": len(rows),
     }
+    if chg is not None:
+        data["chg"] = chg
+    if row.get("k200"):
+        data["k200"] = 1
     data["_last"] = rows[-1][0][:8]          # 최근 거래일 (기준일 산정 후 정리)
 
     rsi = rsi_wilder(closes)
@@ -706,8 +785,15 @@ def main() -> int:
     start = (datetime.strptime(end, "%Y%m%d").date()
              - timedelta(days=365 * args.years)).strftime("%Y%m%d")
 
-    log(f"[1/3] 상장 종목 수집 (기간 {start}~{end})")
-    universe = load_universe(log)
+    log(f"[1/4] 코스피200 구성종목 수집")
+    k200: Dict[str, str] = {}
+    try:
+        k200 = fetch_kospi200(log)
+    except Exception as exc:  # noqa: BLE001 - 지수 목록 실패는 전체 수집을 막지 않는다
+        log(f"  ! 코스피200 수집 실패: {exc} (k200 플래그 없이 진행)")
+
+    log(f"[2/4] 상장 종목 수집 (기간 {start}~{end})")
+    universe = load_universe(log, k200)
 
     if args.codes:
         wanted = {c.strip() for c in args.codes.split(",") if c.strip()}
@@ -744,7 +830,7 @@ def main() -> int:
     cache_f = open(cache_path, "a" if args.resume else "w", encoding="utf-8")
 
     pending = [u for u in universe if u["code"] not in results]
-    log(f"[2/3] 일별 시세·재무·공시·뉴스 수집 시작 (대상 {len(pending):,}개, workers={args.workers})")
+    log(f"[3/4] 일별 시세·재무·공시·뉴스 수집 시작 (대상 {len(pending):,}개, workers={args.workers})")
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
         futs = {
             ex.submit(build_stock, u, start, end, not args.no_finance, not args.no_extras): u
@@ -772,7 +858,7 @@ def main() -> int:
                     f"남은 예상 {eta/60:.1f}분")
     cache_f.close()
 
-    log(f"[3/3] 결과 저장")
+    log(f"[4/4] 결과 저장")
 
     # 상세 화면용 공시·뉴스는 종목별로 떼어내 16개 파일로 나눠 저장 (지연 로드)
     extras: Dict[str, Dict[str, Any]] = {}
@@ -795,6 +881,18 @@ def main() -> int:
         if ld and ld != as_of:
             d["ld"] = ld          # 거래정지 등 기준일과 다른 최근 거래일
 
+    # 코스피200 플래그는 이번 실행에서 받은 지수 구성종목 목록으로 다시 맞춘다
+    # (--resume 으로 캐시를 재사용해도 최신 목록이 반영되도록).
+    if k200:
+        for d in stocks:
+            if d["c"] in k200:
+                d["k200"] = 1
+            else:
+                d.pop("k200", None)
+    k200_count = sum(1 for d in stocks if d.get("k200"))
+    log(f"코스피200 표시 종목 {k200_count:,}개 · 등락률 있는 종목 "
+        f"{sum(1 for d in stocks if d.get('chg') is not None):,}개")
+
     payload = {
         "meta": {
             "as_of": f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:8]}",
@@ -805,7 +903,8 @@ def main() -> int:
             "periods": [p for p in PERIODS if p <= args.years],
             "bins": BINS,
             "rsi_period": RSI_PERIOD,
-            "source": "네이버 금융(일별 시세·연간 실적·배당·공시·뉴스)·KRX 상장 목록(FinanceDataReader)",
+            "k200_count": k200_count,
+            "source": "네이버 금융(일별 시세·연간 실적·배당·공시·뉴스·코스피200 구성종목)·KRX 상장 목록(FinanceDataReader)",
             "universe": "코스피·코스닥 보통주 (ETF·ETN·스팩·리츠·우선주 제외)",
             "units": {"price": "원", "marcap": "억원", "fin": "억원", "dps": "원", "dy": "%"},
             "extra": {"shards": EXTRA_SHARDS, "disc": DISC_LIMIT, "news": NEWS_LIMIT},
@@ -816,6 +915,7 @@ def main() -> int:
                 "RSI(14)는 일별 종가 기준 와일더 방식입니다.",
                 "영업이익·순이익은 네이버 금융 연간 확정 실적(최근 3개 사업연도)입니다.",
                 "배당은 최근 확정 사업연도 주당배당금(dps)과 그 배당금을 현재가로 나눈 배당수익률(dy)입니다.",
+                "등락률(chg)은 일별 종가의 최근 두 거래일(전일 종가 대비) 기준이며, 코스피200(k200)은 네이버 금융 코스피200 구성종목 기준입니다.",
                 "최근 공시·뉴스는 상세 화면에서만 지연 로드하며(data/extras/{n}.json), 네이버 금융 제공 기준입니다.",
             ],
         },

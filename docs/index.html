@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>국내주식 매물대 스크리너 · 1~5년 매물대·재무·배당·RSI</title>
-<meta name="description" content="코스피·코스닥 보통주 2,500여 종목의 1~5년 매물대(POC·누적 백분위), 평균단가(VWAP), RSI(14), 3년 영업이익·순이익, 배당수익률·주당배당금, 최근 공시·뉴스, 시가총액을 한 화면에서 거르는 스크리너.">
-<link rel="stylesheet" href="style.css?v=20261125f">
+<meta name="description" content="코스피·코스닥 보통주 2,500여 종목과 코스피200의 1~5년 매물대(POC·누적 백분위), 평균단가(VWAP), RSI(14), 3년 영업이익·순이익, 배당수익률·주당배당금, 최근 공시·뉴스, 시가총액을 한 화면에서 거르는 스크리너.">
+<link rel="stylesheet" href="style.css?v=20261126a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f45d0'/%3E%3Cpath d='M7 21l5-7 4 4 4-6 5 5' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -44,15 +45,33 @@
   </section>
 
   <section class="filters" id="filters" aria-label="필터">
-    <div class="filter-head">
-      <div class="fh-left">
-        <strong>필터</strong>
+    <div class="qb">
+      <label class="qb-search">
+        <svg class="s-ico" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><circle cx="9" cy="9" r="5.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13.4 13.4L17.4 17.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input type="search" id="f-q" placeholder="종목명 또는 코드 검색" autocomplete="off" aria-label="종목명 또는 코드 검색">
+      </label>
+      <label class="qb-sort">
+        <span class="sr-only">정렬</span>
+        <select id="f-sort" aria-label="정렬">
+          <option value="mc">시가총액 높은 순</option>
+          <option value="div">배당수익률 높은 순</option>
+          <option value="cum">매물대 낮은 순</option>
+          <option value="rsi">RSI 낮은 순</option>
+          <option value="mult">영업이익 배수 낮은 순</option>
+          <option value="poc">POC 괴리 낮은 순</option>
+          <option value="vwap" id="lbl-sort-vwap">5년 평균 대비 낮은 순</option>
+          <option value="name">이름 순</option>
+        </select>
+      </label>
+      <button type="button" class="watch-btn" id="f-watch" aria-pressed="false">
+        <span class="star-ico" aria-hidden="true">⭐</span> 관심종목만 <span class="pill" id="cnt-watch">0</span>
+      </button>
+      <button type="button" class="link-btn qb-more" id="toggle-filters" aria-expanded="false" aria-controls="filter-grid">
+        <span class="qb-more-lbl">상세 조건</span>
         <span class="fh-count" id="filter-count">조건 없음</span>
-      </div>
-      <div class="fh-right">
-        <button class="link-btn" id="toggle-filters" aria-expanded="true" aria-controls="filter-grid">상세 조건 <span class="chev">▲</span></button>
-        <button class="link-btn" id="reset">초기화</button>
-      </div>
+        <span class="chev">▼</span>
+      </button>
+      <button type="button" class="link-btn qb-reset" id="reset">초기화</button>
     </div>
     <div class="filter-grid" id="filter-grid">
       <label class="field">
@@ -61,6 +80,7 @@
           <option value="all">전체</option>
           <option value="K">코스피</option>
           <option value="Q">코스닥</option>
+          <option value="K200">코스피200</option>
         </select>
       </label>
 
@@ -108,6 +128,17 @@
         </span>
       </label>
 
+      <label class="field">
+        <span>최소 배당률</span>
+        <select id="f-divmin">
+          <option value="0">전체</option>
+          <option value="1">1% 이상</option>
+          <option value="2">2% 이상</option>
+          <option value="3">3% 이상</option>
+          <option value="5">5% 이상</option>
+        </select>
+      </label>
+
       <div class="field rsi-field">
         <span>RSI(14)</span>
         <div class="rsi-row">
@@ -123,24 +154,6 @@
         </div>
       </div>
 
-      <label class="field">
-        <span>검색</span>
-        <input type="search" id="f-q" placeholder="종목명 또는 코드" autocomplete="off">
-      </label>
-
-      <label class="field">
-        <span>정렬</span>
-        <select id="f-sort">
-          <option value="mc">시가총액 높은 순</option>
-          <option value="div">배당수익률 높은 순</option>
-          <option value="cum">매물대 낮은 순</option>
-          <option value="rsi">RSI 낮은 순</option>
-          <option value="mult">영업이익 배수 낮은 순</option>
-          <option value="poc">POC 괴리 낮은 순</option>
-          <option value="vwap" id="lbl-sort-vwap">5년 평균 대비 낮은 순</option>
-          <option value="name">이름 순</option>
-        </select>
-      </label>
     </div>
   </section>
 
@@ -156,6 +169,7 @@
 
     <div class="table" id="table">
       <div class="thead" role="row">
+        <div class="th-star">찜</div>
         <div>종목</div>
         <div class="num">현재가</div>
         <div class="num">시가총액</div>
@@ -202,6 +216,18 @@
           <dd>네이버 금융 연간 실적의 <b>주당배당금</b> 중 가장 최근 <b>확정 사업연도</b> 값을 쓰고, 배당수익률은 그 배당금을 <b>현재가</b>로 나눈 값입니다. 지난해 배당이 없던 종목은 <b>–</b>(무배당)으로 표시합니다. 참고: 배당락·분할 등으로 실제 통지서와 다를 수 있습니다.</dd>
           <dt>최근 공시 · 뉴스</dt>
           <dd>상세 화면을 열면 종목별 <b>최근 공시 4건</b>과 <b>최근 뉴스 3건</b>을 불러옵니다(네이버 금융 제공). 공시 제목에 <b>유증·무증·자사주·소각·수주·실적·배당</b> 같은 키워드가 있으면 색 배지로 강조합니다. 전체 공시 원문은 아래 <b>DART 공시</b>·<b>네이버 공시</b> 링크에서 확인하세요.</dd>
+          <dt>코스피200</dt>
+          <dd>상세 조건의 <b>시장</b>에서 <b>코스피200</b>을 고르면 코스피200 구성종목만 모아 봅니다. 구성종목은 네이버 금융 코스피200 목록을 매일 받아 표시하며, 종목명 옆 <b>K200</b> 뱃지로도 확인할 수 있습니다.</dd>
+          <dt>전일 대비 등락률</dt>
+          <dd>현재가 아래 작은 글씨로 표시되는 <b>전일 대비</b> 등락률은 최근 두 거래일 종가를 비교한 값입니다. <b>상승은 빨간색, 하락은 파란색</b>입니다.</dd>
+          <dt>관심종목 (⭐)</dt>
+          <dd>종목 행이나 상세 화면의 <b>☆</b> 버튼을 누르면 관심종목으로 저장되고(이 브라우저에만 저장), 상단 <b>⭐ 관심종목만</b> 버튼으로 모아 볼 수 있습니다. 별을 다시 누르면 해제됩니다.</dd>
+          <dt>최소 배당률</dt>
+          <dd>배당수익률이 선택한 값(%) 이상인 종목만 보여줍니다. 배당이 없는 종목은 제외됩니다.</dd>
+          <dt>상세 화면에서 기간 바꾸기</dt>
+          <dd>종목을 눌러 연 상세 화면 위쪽의 <b>1년~5년</b> 버튼으로 그 종목의 매물대·누적 백분위·POC·평균단가·차트를 바로 바꿔 볼 수 있습니다. 목록의 기간 선택과도 함께 맞춰집니다.</dd>
+          <dt>화면 색상 (라이트·다크)</dt>
+          <dd>휴대폰·PC의 화면 설정이 <b>다크 모드</b>면 자동으로 어두운 테마로, 라이트 모드면 밝은 테마로 표시됩니다.</dd>
           <dt>데이터 출처</dt>
           <dd>일별 시세·연간 실적·배당·공시·뉴스: 네이버 금융 (수정주가 기준, 액면분할 반영). 종목 목록·시가총액: KRX 상장 목록(FinanceDataReader). ETF·ETN·스팩·리츠·우선주·펀드는 제외한 코스피·코스닥 보통주만 담았습니다.</dd>
         </dl>
@@ -223,12 +249,25 @@
         <h2 id="d-name">–</h2>
         <p id="d-sub" class="muted">–</p>
       </div>
-      <button class="close" data-close aria-label="닫기">✕</button>
+      <div class="dtop-actions">
+        <button type="button" class="star-btn lg" id="d-star" data-star="" aria-pressed="false" title="관심종목에 추가" aria-label="관심종목에 추가"><span class="star-ico">☆</span></button>
+        <button class="close" data-close aria-label="닫기">✕</button>
+      </div>
+    </div>
+    <div class="d-period" id="d-period" role="group" aria-label="상세 화면 매물대 기간">
+      <span class="dp-title">매물대 기간</span>
+      <div class="seg">
+        <button class="seg-btn" type="button" data-dperiod="1">1년</button>
+        <button class="seg-btn" type="button" data-dperiod="2">2년</button>
+        <button class="seg-btn" type="button" data-dperiod="3">3년</button>
+        <button class="seg-btn" type="button" data-dperiod="4">4년</button>
+        <button class="seg-btn active" type="button" data-dperiod="5">5년</button>
+      </div>
     </div>
     <div id="d-body"></div>
   </aside>
 </div>
 
-<script src="app.js?v=20261125f"></script>
+<script src="app.js?v=20261126a"></script>
 </body>
 </html>
