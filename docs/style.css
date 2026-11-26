@@ -244,9 +244,9 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 48px}
 .cell{min-width:0;font-variant-numeric:tabular-nums}
 .cell.name{display:flex;flex-direction:column;gap:2px;min-width:0}
 .cell.star{display:flex;align-items:center;justify-content:flex-start}
-.name-line{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}
+.name-line{display:flex;align-items:center;gap:6px;min-width:0}
 .stock-name{font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
-.code-line{font-size:11.5px;color:var(--muted);display:flex;gap:5px;align-items:center}
+.code-line{font-size:11.5px;color:var(--muted);display:flex;gap:5px;align-items:center;flex-wrap:wrap}
 .mkt{font-size:10.5px;font-weight:700;padding:1px 5px;border-radius:4px;background:var(--card-3);color:var(--ink-2)}
 .mkt.K{background:var(--accent-soft);color:var(--accent)}
 .mkt.Q{background:#fdf0f6;color:#a2196c}
@@ -334,6 +334,7 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 48px}
   background:var(--card-2);color:var(--accent);font-weight:700;font-size:14px;
 }
 .more:hover{background:var(--accent-soft)}
+.more[hidden]{display:none}
 
 /* ---------- guide ---------- */
 .guide{margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}

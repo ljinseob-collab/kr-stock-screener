@@ -284,8 +284,8 @@ function rowHtml(s) {
   return `<div class="row" data-code="${s.c}" role="row" tabindex="0">
     <div class="cell star">${starBtn(s.c)}</div>
     <div class="cell name">
-      <div class="name-line"><span class="stock-name">${esc(s.n)}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${s.k200 === 1 ? '<span class="mkt k200">K200</span>' : ''}${short}${stale}</div>
-      <div class="code-line">${s.c}</div>
+      <div class="name-line"><span class="stock-name">${esc(s.n)}</span>${short}${stale}</div>
+      <div class="code-line"><span>${s.c}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${s.k200 === 1 ? '<span class="mkt k200">K200</span>' : ''}</div>
     </div>
     <div class="cell num price-cell" data-label="현재가"><span class="price">${fmtInt(s.p)}</span>${chgHtml}</div>
     <div class="cell num" data-label="시가총액">${fmtEok(s.mc)}</div>
