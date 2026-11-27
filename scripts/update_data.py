@@ -68,8 +68,19 @@ K200_MAX_PAGES = 15
 DISC_URL = "https://m.stock.naver.com/api/stock/{code}/disclosure"
 NEWS_URL = "https://m.stock.naver.com/api/news/stock/{code}?pageSize=20&page=1"
 
+# 주요 수익원(기업개요·주요제품 매출구성·홈페이지) — WISEfn 기업모니터
+WISE_MAIN_URL = "https://comp.wisereport.co.kr/company/c1010001.aspx?cmp_cd={code}"
+WISE_PROD_URL = "https://comp.wisereport.co.kr/company/c1020001.aspx?cmp_cd={code}"
+WISE_REFERER = "https://comp.wisereport.co.kr/"
+# 업종 분류 — 네이버 금융 업종 목록(79개 업종, 100종목/페이지)
+NAVER_IND_LIST_URL = "https://m.stock.naver.com/api/stocks/industry?page={page}&pageSize=100"
+NAVER_IND_STOCKS_URL = "https://m.stock.naver.com/api/stocks/industry/{no}?page={page}&pageSize=100"
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(BASE_DIR, "docs", "data", "stocks.json")
+# 기업개요 캐시: 한 번 받은 기업개요·주요제품·업종을 저장해 두고 신규/미보유 종목만 다시 받는다.
+PROFILE_CACHE_PATH = os.path.join(BASE_DIR, "scripts", "kr_profile_cache.json")
+PROFILE_VER = 3           # 파생 규칙이 바뀌면 올린다(캐시 전체 재수집)
 
 FIN_LABELS = ("영업이익", "당기순이익")
 
@@ -116,9 +127,9 @@ class HttpError(Exception):
 
 
 def http_get(url: str, referer: str = "https://finance.naver.com/",
-             timeout: int = 25) -> requests.Response:
+             timeout: int = 25, ua: Optional[str] = None) -> requests.Response:
     headers = {
-        "User-Agent": UA_PC if "api.finance.naver.com" in url else UA_MOBILE,
+        "User-Agent": ua or (UA_PC if "api.finance.naver.com" in url else UA_MOBILE),
         "Referer": referer,
         "Accept": "*/*",
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
@@ -550,6 +561,529 @@ def shard_of(code: str, n: int = EXTRA_SHARDS) -> int:
 
 
 # ----------------------------------------------------------------------------
+# 3-c) 주요 수익원 · 사업 구조 (기업개요·주요제품 매출구성·업종·홈페이지)
+# ----------------------------------------------------------------------------
+#
+# 국내 종목은 미국 탭처럼 증권사 요약문이 따로 없어서, WISEfn 기업모니터의
+# '기업현황'(기업개요 서술 + 홈페이지)과 '기업개요'(주요제품 매출구성)를 합쳐
+# 한 줄 수익원(revShort)과 상세 설명(revDetail)을 만든다. 2,500종목을 매일
+# 처음부터 받으면 시간이 걸리므로 scripts/kr_profile_cache.json 에 캐시하고
+# 신규/미보유 종목만 받는다. 업종은 네이버 금융 업종 분류를 쓴다.
+
+# 지역 구분도 수익원이 아니다
+REGION_WORDS = {
+    "내수", "수출", "국내", "해외", "북중미", "유럽", "아시아", "중국", "미국", "일본",
+    "국내외", "기타지역", "아메리카", "중남미", "중동", "아프리카", "오세아니아",
+}
+
+
+def _norm_label(s: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", s or "").lower()
+
+
+# 수익원 문구로 쓰기 어려운 포괄 상품명
+GENERIC_PRODUCT = {
+    "제품", "상품", "용역", "서비스", "기타", "매출", "매출액", "상품매출", "제품매출",
+    "용역매출", "영업수익", "임대", "투자", "로열티", "수수료", "연결조정", "내부거래제거",
+    "기타매출", "기타수익", "사업", "사업부문", "기타사업", "기타부문", "운영", "판매", "제조",
+    "제품판매", "상품판매", "용역제공", "배당수익", "배당금수익", "로열티수익", "임대수익",
+    "브랜드수익", "상표권수익", "corporate account", "기타수익",
+    "도소매", "제품 및 상품매출", "제품및상품매출", "상품 및 제품매출",
+    # 금융업 매출구성은 사업이 아니라 계정 과목이라 수익원으로 쓰지 않는다
+    "이자수익", "수수료수익", "유가증권평가및처분이익", "유가증권평가및매도이익",
+    "외환거래이익", "보험료수익", "신탁업무운용수익", "창업투자및기업구조조정수익",
+    "배당금수익", "기타영업수익", "이자비용", "보험금수익", "투자수익", "평가이익",
+}
+GENERIC_NORM = {_norm_label(x) for x in GENERIC_PRODUCT}
+# 상품명 축약
+PRODUCT_SYNONYM = {
+    "차량": "자동차", "전지": "2차전지", "이차전지": "2차전지",
+    "A·S": "AS", "A/S": "AS",
+}
+# 업종명이 너무 길거나 어색한 것만 짧게 (나머지는 '와/과/및' → '·' 로 다듬는다)
+INDUSTRY_SHORT = {
+    "반도체와반도체장비": "반도체",
+    "디스플레이장비및부품": "디스플레이 부품",
+    "디스플레이패널": "디스플레이 패널",
+    "전자장비와기기": "전자부품",
+    "전자제품": "전자제품",
+    "IT서비스": "IT서비스",
+    "컴퓨터와주변기기": "컴퓨터·주변기기",
+    "통신장비": "통신장비",
+    "무선통신서비스": "통신서비스",
+    "다각화된통신서비스": "통신서비스",
+    "생명과학도구및서비스": "바이오 장비·서비스",
+    "건강관리장비와용품": "의료기기",
+    "건강관리업체및서비스": "의료서비스",
+    "건강관리기술": "디지털 헬스",
+    "생명보험": "생명보험", "손해보험": "손해보험",
+    "복합기업": "지주회사",
+    "판매업체": "유통",
+    "무역회사와판매업체": "무역·유통",
+    "상업서비스와공급품": "상업서비스",
+    "다각화된소비자서비스": "소비자서비스",
+    "인터넷과카탈로그소매": "온라인 유통",
+    "식품과기본식료품소매": "식품 유통",
+    "백화점과일반상점": "백화점·유통",
+    "전문소매": "전문소매",
+    "항공화물운송과물류": "물류",
+    "도로와철도운송": "운송",
+    "운송인프라": "운송인프라",
+    "방송과엔터테인먼트": "방송·엔터",
+    "양방향미디어와서비스": "인터넷 서비스",
+    "게임엔터테인먼트": "게임",
+    "호텔,레스토랑,레저": "호텔·레저",
+    "섬유,의류,신발,호화품": "의류·패션",
+    "가정용기기와용품": "생활가전",
+    "가정용품": "생활용품",
+    "에너지장비및서비스": "에너지 장비",
+    "석유와가스": "석유·가스",
+    "전기유틸리티": "전력",
+    "가스유틸리티": "가스",
+    "복합유틸리티": "에너지·유틸리티",
+    "우주항공과국방": "항공우주·국방",
+    "레저용장비와제품": "레저용품",
+    "사무용전자제품": "사무기기",
+    "포장재": "포장재",
+    "종이와목재": "제지·목재",
+    "문구류": "문구",
+    "건축제품": "건축자재",
+    "건축자재": "건축자재",
+    "출판": "출판",
+    "교육서비스": "교육",
+    "광고": "광고",
+    "화장품": "화장품",
+    "담배": "담배",
+    "음료": "음료", "식품": "식품",
+    "제약": "제약",
+    "생물공학": "바이오",
+    "은행": "은행", "증권": "증권", "카드": "카드", "창업투자": "벤처투자",
+    "기타금융": "금융",
+    "부동산": "부동산",
+    "해운사": "해운",
+    "항공사": "항공",
+    "조선": "조선",
+    "건설": "건설",
+    "철강": "철강", "비철금속": "비철금속",
+    "화학": "화학",
+    "기계": "기계",
+    "전기장비": "전기장비", "전기제품": "전기제품",
+    "자동차": "자동차", "자동차부품": "자동차부품",
+    "소프트웨어": "소프트웨어",
+    "핸드셋": "스마트폰·단말기",
+    "가구": "가구",
+    "기타": "",
+}
+
+
+# 대형·눈에 띄는 종목은 한 줄 수익원을 직접 다듬는다(자동 추출이 어색한 경우만).
+# {종목코드: (한 줄 수익원, 상세 설명 또는 None)} — 상세를 비우면 자동 문구를 쓴다.
+COMPANY_REV: Dict[str, Tuple[str, Optional[str]]] = {
+    "373220": ("2차전지(EV·ESS)", None),          # LG에너지솔루션
+    "009150": ("MLCC · 카메라모듈 · 기판", None),   # 삼성전기
+    "034730": ("에너지·통신 지주", None),          # SK
+    "034020": ("발전설비 · 건설기계", None),         # 두산에너빌리티
+    "066570": ("가전 · TV · 전장부품", None),       # LG전자
+    "010120": ("전력기기 · 자동화", None),          # LS ELECTRIC
+    "096770": ("정유 · 화학 · 배터리", None),       # SK이노베이션
+    "003670": ("양극재·음극재 · 내화물", None),     # 포스코퓨처엠
+    "028050": ("플랜트 건설(EPC)", None),         # 삼성E&A
+    "180640": ("지주(대한항공·호텔)", None),       # 한진칼
+    "000150": ("지주(건설기계·발전·전자소재)", None),  # 두산
+    "454910": ("협동로봇", None),                  # 두산로보틱스
+    "064350": ("철도차량 · 방산", None),           # 현대로템
+    "000880": ("방산 · 태양광 · 금융", None),       # 한화
+    "012450": ("조선 · 방산 · 항공엔진", None),     # 한화에어로스페이스
+    "108860": ("AI 음성인식 · 의료 AI", None),     # 셀바스AI
+}
+
+
+def _clean_html(s: Any) -> str:
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", str(s or "")))).strip()
+
+
+def _industry_short(name: str) -> str:
+    """업종명 → 한 줄 수익원 대체 문구. 사전에 없으면 '와/과/및'만 다듬는다."""
+    name = (name or "").strip()
+    if not name:
+        return ""
+    if name in INDUSTRY_SHORT:
+        return INDUSTRY_SHORT[name]
+    return re.sub(r"\s*(?:와|과|및)\s*", "·", name)
+
+
+def _product_label(raw: str) -> str:
+    """'DS(반도체 등)' → '반도체', '의류, 잡화(상품)' → '의류·잡화' 처럼 수익원 키워드로 다듬는다."""
+    s = _clean_html(raw).replace("·", ",")
+    m = re.match(r"^(.*?)\s*\(([^)]*)\)\s*(.*)$", s)
+    if m:
+        outer = re.sub(r"\s*등$", "", m.group(1).strip()).strip()
+        inner_core = re.sub(r"\s*등$", "", m.group(2).strip()).strip()
+        if outer in REGION_WORDS:
+            return ""            # '북중미(KUS)' 같은 지역 구분은 통째로 뺀다
+        # 바깥이 포괄 상품명이거나 DS·DX 같은 짧은 영문 약어이면 괄호 안을 쓴다
+        outer_is_code = (not re.search("[가-힣]", outer)
+                         and bool(re.fullmatch(r"[A-Za-z0-9&.\- ]{1,8}", outer)))
+        if outer_is_code or outer in GENERIC_PRODUCT or _norm_label(outer) in GENERIC_NORM:
+            s = inner_core
+        elif inner_core in GENERIC_PRODUCT or inner_core == "등":
+            s = outer
+        else:
+            s = outer
+    s = re.sub(r"\s*등$", "", s)
+    s = re.sub(r"\s*(?:사업)?부문$", "", s).strip()
+    s = re.sub(r"\(주\)|㈜", "", s)
+    s = re.sub(r"\s*[,/]\s*", "·", s)
+    s = re.sub(r"\s+", " ", s).strip(" ·-")
+    s = re.sub("^(" + "|".join(REGION_WORDS) + r")\s+", "", s)   # '국내 판재' → '판재'
+    s = s.replace("A/S", "AS").replace("A·S", "AS")
+    s = PRODUCT_SYNONYM.get(s, s)
+    s = re.sub(r"\s*(?:外|외)$", "", s).strip()
+    if re.search(r"(제품|상품)\s*(?:및|·)?\s*(?:상품|제품)?\s*매출", s):
+        return ""
+    if s in REGION_WORDS or s in GENERIC_PRODUCT or _norm_label(s) in GENERIC_NORM:
+        return ""
+    if len(s) > 22:          # 너무 긴 상품 설명은 한 줄 수익원으로 쓰기 어렵다
+        head = re.split(r"\s*[&,]\s*", s)[0].strip()
+        s = head if 2 <= len(head) <= 22 else ""
+    if len(s) < 2:
+        return ""
+    return s
+
+
+def _pick_products(prods: List[List[Any]], company: str = "", max_items: int = 3,
+                   max_len: int = 28, min_share: float = 4.0
+                   ) -> List[Tuple[str, float, float]]:
+    """주요제품 매출구성에서 한 줄 수익원으로 쓸 항목을 고른다.
+
+    같은 이름('의약품(제품)'·'의약품(상품)')은 합산하고, 합계가 100%를 넘으면
+    가장 큰 단일 항목 비중을 쓴다(내부거래가 섞여 100%를 넘는 경우가 있다).
+    반환: [(상품명, 표시 비중, 합산 비중)]
+    """
+    merged: List[Tuple[str, float, float]] = []
+    idx: Dict[str, int] = {}
+    for name, share in prods or []:
+        try:
+            share = float(share)
+        except (TypeError, ValueError):
+            continue
+        if share <= 0:
+            continue
+        label = _product_label(str(name))
+        if not label:
+            continue
+        if label in idx:
+            i = idx[label]
+            merged[i] = (label, merged[i][1] + share, max(merged[i][2], share))
+        else:
+            idx[label] = len(merged)
+            merged.append((label, share, share))
+    merged.sort(key=lambda x: -x[1])
+    # 상품명이 회사 이름 그대로인 경우(예: 'LS ELECTRIC')는 수익원이 아니므로 뺀다
+    norm_company = re.sub(r"[^0-9A-Za-z가-힣]", "", company or "").lower()
+    if norm_company:
+        merged = [m for m in merged
+                  if re.sub(r"[^0-9A-Za-z가-힣]", "", m[0]).lower() != norm_company]
+    if not merged or sum(s for _, s, _ in merged[:3]) < 25:
+        # 대부분의 매출이 '제품·상품매출' 같은 포괄 항목이라 수익원을 특정할 수 없다
+        return []
+    picked: List[Tuple[str, float, float]] = []
+    total = 0
+    for label, share, single in merged:
+        if picked and share < min_share:
+            break
+        add = len(label) if not picked else len(label) + 3
+        if picked and total + add > max_len:
+            break
+        picked.append((label, share, single))
+        total += add
+        if len(picked) >= max_items:
+            break
+    return picked
+
+
+def parse_wise_profile(main_html: str, prod_html: str) -> Dict[str, Any]:
+    """WISEfn 기업현황(기업개요·홈페이지) + 기업개요(주요제품 매출구성) 파싱."""
+    out: Dict[str, Any] = {}
+    # 홈페이지: 기업개요 페이지(c1020001)의 표 행, 없으면 기업현황(c1010001) 머리말 아이콘
+    for page_html in (prod_html, main_html):
+        if not page_html or out.get("w"):
+            continue
+        m = re.search(r"<th[^>]*>\s*홈페이지\s*</th>(.*?)</tr>", page_html, re.S)
+        if not m:
+            m = re.search(r'title="새창열기:\[홈페이지\][^"]*"[^>]*href="([^"]+)"', page_html)
+            if m:
+                w = m.group(1).strip()
+                if w.startswith("http"):
+                    out["w"] = w
+            continue
+        a = re.search(r'href="([^"]+)"', m.group(1))
+        if a and a.group(1).strip().startswith("http"):
+            out["w"] = a.group(1).strip()
+    if main_html:
+        m = re.search(r'<div class="cmp_comment">(.*?)</div>', main_html, re.S)
+        if m:
+            items = re.findall(r'<li[^>]*class="dot_cmp"[^>]*>(.*?)</li>', m.group(1), re.S)
+            bullets = [_clean_html(x) for x in items]
+            bullets = [b for b in bullets if len(b) >= 10][:3]
+            if bullets:
+                out["b"] = bullets
+    if prod_html:
+        m = re.search(r'<table id="cTB203".*?</table>', prod_html, re.S)
+        if m:
+            prods: List[List[Any]] = []
+            for row in re.findall(r"<tr>(.*?)</tr>", m.group(0), re.S):
+                th = re.search(r"<th[^>]*>(.*?)</th>", row, re.S)
+                td = re.search(r"<td[^>]*>(.*?)</td>", row, re.S)
+                if not th or not td:
+                    continue
+                name = _clean_html(th.group(1))
+                try:
+                    share = float(_clean_html(td.group(1)))
+                except ValueError:
+                    continue
+                if name and share > 0:
+                    prods.append([name, round(share, 2)])
+            if prods:
+                out["p"] = prods[:6]
+    return out
+
+
+def fetch_wise_profile(code: str) -> Dict[str, Any]:
+    """종목 1개의 기업개요·주요제품·홈페이지. 페이지가 없으면 {'none': 1}."""
+    def one() -> Dict[str, Any]:
+        r1 = http_get(WISE_MAIN_URL.format(code=code), referer=WISE_REFERER,
+                      timeout=30, ua=UA_PC)
+        if r1.status_code == 429:
+            raise HttpError("WISE 429 rate limited")
+        if r1.status_code == 404:
+            return {"none": 1}
+        if r1.status_code != 200:
+            raise HttpError(f"WISE 기업현황 HTTP {r1.status_code}")
+        r2 = http_get(WISE_PROD_URL.format(code=code), referer=WISE_REFERER,
+                      timeout=30, ua=UA_PC)
+        if r2.status_code == 429:
+            raise HttpError("WISE 429 rate limited")
+        prod_html = r2.text if r2.status_code == 200 else ""
+        return parse_wise_profile(r1.text, prod_html)
+
+    try:
+        data = with_retry(one, tries=3, base_delay=1.0)
+    except Exception as exc:  # noqa: BLE001 - 개별 종목 실패는 전체를 막지 않는다
+        return {"err": f"{type(exc).__name__}: {exc}"[:120]}
+    return data
+
+
+def fetch_industry_map(log) -> Dict[str, str]:
+    """네이버 금융 업종 분류 {종목코드: 업종명}. 79개 업종을 페이지 단위로 훑는다."""
+    groups: List[Dict[str, Any]] = []
+    page = 1
+    while page <= 3:
+        def one(p=page):
+            r = http_get(NAVER_IND_LIST_URL.format(page=p), timeout=20)
+            if r.status_code != 200:
+                raise HttpError(f"HTTP {r.status_code}")
+            d = r.json()
+            return d.get("groups") or [], int(d.get("totalCount") or 0)
+        try:
+            got, total = with_retry(one, tries=3, base_delay=0.7)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ! 업종 목록 {page}페이지 실패: {exc}")
+            break
+        groups.extend(got)
+        if not got or len(groups) >= total:
+            break
+        page += 1
+
+    out: Dict[str, str] = {}
+    for g in groups:
+        no, name = g.get("no"), str(g.get("name") or "")
+        if not no or not name:
+            continue
+        p = 1
+        while p <= 5:
+            def one(page_no=no, page_p=p):
+                r = http_get(NAVER_IND_STOCKS_URL.format(no=page_no, page=page_p), timeout=20)
+                if r.status_code != 200:
+                    raise HttpError(f"HTTP {r.status_code}")
+                return r.json()
+            try:
+                d = with_retry(one, tries=2, base_delay=0.6)
+            except Exception:  # noqa: BLE001 - 업종 하나 실패는 넘어간다
+                break
+            rows = d.get("stocks") or []
+            for s in rows:
+                code = str(s.get("itemCode") or "").strip()
+                if code:
+                    out.setdefault(code, name)
+            total = int(d.get("totalCount") or 0)
+            if not rows or p * 100 >= total:
+                break
+            p += 1
+    log(f"업종 분류 {len(out):,}종목 수신")
+    return out
+
+
+def _short_sentence(text: str, limit: int = 150) -> str:
+    """문장 하나를 limit 자 안으로 자른다(문장 경계 우선)."""
+    t = re.sub(r"\s+", " ", text or "").strip()
+    t = t.replace("동사는", "이 회사는").replace("당사는", "이 회사는")
+    t = t.replace("동사", "이 회사").replace("당사", "이 회사")
+    if len(t) <= limit:
+        return t
+    parts = re.split(r"(?<=[.!?])\s+", t)
+    out = ""
+    for part in parts:
+        if out and len(out) + len(part) + 1 > limit:
+            break
+        out = (out + " " + part).strip()
+    if not out or len(out) < 30:
+        out = t[:limit].rsplit(" ", 1)[0]
+        return out.rstrip(" ,·") + "…"
+    return out
+
+
+def rev_text(entry: Dict[str, Any], industry: str, code: str = "",
+             company: str = "") -> Tuple[str, str]:
+    """기업개요 캐시 1건 → (한 줄 수익원, 상세 설명)."""
+    prods = entry.get("p") or []
+    picked = _pick_products(prods, company)
+    ind_short = _industry_short(industry)
+    short = " · ".join(label for label, _, _ in picked) if picked else ind_short
+
+    sents: List[str] = []
+    for b in (entry.get("b") or [])[:2]:
+        s = _short_sentence(b)
+        if s:
+            sents.append(s.rstrip(".") + ".")
+    detail = " ".join(sents)
+
+    if picked:
+        def shown(share: float, single: float) -> float:
+            return share if share <= 100.0 else single
+        mix = "매출 비중은 " + " · ".join(
+            f"{label} {shown(share, single):.1f}%" for label, share, single in picked) + "입니다."
+        detail = (detail + " " + mix).strip() if detail else mix
+
+    if not detail:
+        if ind_short:
+            detail = f"{ind_short} 업종으로, 주요 수익원은 {short or '사업 다각화'}입니다."
+        elif short:
+            detail = f"주요 수익원은 {short}입니다."
+    if len(detail) > 420:
+        cut = detail[:420]
+        for sep in (". ", "다. "):
+            i = cut.rfind(sep)
+            if i > 200:
+                cut = cut[: i + 1]
+                break
+        detail = cut.rstrip()
+    if not short:
+        short = "사업 다각화"
+    ov = COMPANY_REV.get(code)
+    if ov:
+        short = ov[0]
+        if ov[1]:
+            detail = ov[1]
+    return short, detail
+
+
+def load_profile_cache() -> Dict[str, Dict[str, Any]]:
+    try:
+        with open(PROFILE_CACHE_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        d.pop("_v", None)
+        return d if isinstance(d, dict) else {}
+    except Exception:  # noqa: BLE001 - 캐시가 없거나 깨지면 새로 받는다
+        return {}
+
+
+def save_profile_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    payload: Dict[str, Any] = {"_v": PROFILE_VER}
+    for k in sorted(cache):
+        payload[k] = cache[k]
+    os.makedirs(os.path.dirname(PROFILE_CACHE_PATH), exist_ok=True)
+    tmp = PROFILE_CACHE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp, PROFILE_CACHE_PATH)
+
+
+def apply_profiles(results: Dict[str, Dict[str, Any]], log,
+                   workers: int = 6) -> None:
+    """수집 결과에 주요 수익원(revShort)·상세(revDetail)·홈페이지(w)·업종(s)을 붙인다."""
+    codes = [c for c, d in results.items()]
+    if not codes:
+        return
+    cache = load_profile_cache()
+    missing = [c for c in codes if cache.get(c, {}).get("v", 0) < PROFILE_VER]
+    log(f"      기업개요 캐시 {len(cache):,}건 · 새로 받을 종목 {len(missing):,}개")
+
+    industry: Dict[str, str] = {}
+    if missing:
+        try:
+            industry = fetch_industry_map(log)
+        except Exception as exc:  # noqa: BLE001 - 업종 없이도 수익원 문구는 만든다
+            log(f"  ! 업종 분류 수집 실패: {exc}")
+
+    if missing:
+        t0 = time.time()
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            futs = {ex.submit(fetch_wise_profile, c): c for c in missing}
+            for fut in as_completed(futs):
+                code = futs[fut]
+                done += 1
+                try:
+                    entry = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    entry = {"err": f"{type(exc).__name__}: {exc}"[:120]}
+                if entry.get("err"):
+                    continue                      # 실패는 캐시에 남기지 않고 다음 실행에서 재시도
+                entry["v"] = PROFILE_VER
+                if industry.get(code):
+                    entry["ind"] = industry[code]
+                cache[code] = entry
+                if done % 200 == 0:
+                    save_profile_cache(cache)
+                    log(f"      기업개요 {done:,}/{len(missing):,} · {time.time()-t0:.0f}s")
+        save_profile_cache(cache)
+        log(f"      기업개요 수집 완료 {len(missing):,}개 · {time.time()-t0:.01f}s")
+
+    attached = 0
+    for code in codes:
+        entry = cache.get(code) or {}
+        ind = entry.get("ind") or industry.get(code) or ""
+        d = results[code]
+        if entry.get("none"):
+            # WISEfn에 기업개요가 없는 종목(신규 상장 등)은 업종만으로 채운다
+            short = _industry_short(ind)
+            if short:
+                d["revShort"] = short
+                x = d.get("_x")
+                if x is None:
+                    x = d["_x"] = {}
+                x["revDetail"] = f"{ind} 업종으로, 주요 수익원은 {short}입니다."
+                x["s"] = ind
+                attached += 1
+            continue
+        if not entry:
+            continue
+        short, detail = rev_text(entry, ind, code, d.get("n") or "")
+        d["revShort"] = short
+        x = d.get("_x")
+        if x is None:
+            x = d["_x"] = {}
+        x["revDetail"] = detail
+        if entry.get("w"):
+            x["w"] = entry["w"]
+        if ind:
+            x["s"] = ind
+        attached += 1
+    log(f"      주요 수익원 붙인 종목 {attached:,}개")
+
+
+# ----------------------------------------------------------------------------
 # 4) 지표 계산
 # ----------------------------------------------------------------------------
 
@@ -811,6 +1345,9 @@ def main() -> int:
     ap.add_argument("--out", type=str, default=DEFAULT_OUT, help="출력 JSON 경로")
     ap.add_argument("--no-finance", action="store_true", help="재무 수집 생략(속도 테스트)")
     ap.add_argument("--no-extras", action="store_true", help="최근 공시·뉴스 수집 생략(속도 테스트)")
+    ap.add_argument("--no-profiles", action="store_true", help="주요 수익원(기업개요) 수집 생략(속도 테스트)")
+    ap.add_argument("--profile-workers", type=int, default=6,
+                    help="기업개요(주요 수익원) 동시 요청 수 (기본 6)")
     ap.add_argument("--end", type=str, default="", help="기준일 YYYYMMDD (기본: 오늘)")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--no-us", action="store_true",
@@ -905,6 +1442,14 @@ def main() -> int:
                     f"남은 예상 {eta/60:.1f}분")
     cache_f.close()
 
+    # 주요 수익원(기업개요·주요제품·업종·홈페이지) 보완 — extras 안으로 들어간다
+    if not args.no_extras and not args.no_profiles:
+        log("[3.5/4] 주요 수익원(기업개요) 보완")
+        try:
+            apply_profiles(results, log, workers=max(1, args.profile_workers))
+        except Exception as exc:  # noqa: BLE001 - 수익원 실패는 수집·배포를 막지 않는다
+            log(f"  ! 주요 수익원 보완 실패: {exc}")
+
     log(f"[4/4] 결과 저장")
 
     # 상세 화면용 공시·뉴스는 종목별로 떼어내 16개 파일로 나눠 저장 (지연 로드)
@@ -951,7 +1496,7 @@ def main() -> int:
             "bins": BINS,
             "rsi_period": RSI_PERIOD,
             "k200_count": k200_count,
-            "source": "네이버 금융(일별 시세·연간 실적·배당·공시·뉴스·코스피200 구성종목)·KRX 상장 목록(FinanceDataReader)",
+            "source": "네이버 금융(일별 시세·연간 실적·배당·공시·뉴스·코스피200 구성종목·업종 분류)·KRX 상장 목록(FinanceDataReader)·WISEfn 기업모니터(기업개요·주요제품 매출구성·홈페이지)",
             "universe": "코스피·코스닥 보통주 (ETF·ETN·스팩·리츠·우선주 제외)",
             "units": {"price": "원", "marcap": "억원", "fin": "억원", "dps": "원", "dy": "%"},
             "extra": {"shards": EXTRA_SHARDS, "disc": DISC_LIMIT, "news": NEWS_LIMIT},
@@ -964,6 +1509,7 @@ def main() -> int:
                 "배당은 최근 확정 사업연도 주당배당금(dps)과 그 배당금을 현재가로 나눈 배당수익률(dy)입니다.",
                 "등락률(chg)은 일별 종가의 최근 두 거래일(전일 종가 대비) 기준이며, 코스피200(k200)은 네이버 금융 코스피200 구성종목 기준입니다.",
                 "최근 공시·뉴스는 상세 화면에서만 지연 로드하며(data/extras/{n}.json), 네이버 금융 제공 기준입니다.",
+                "주요 수익원(revShort)·사업 구조(revDetail)·홈페이지(w)는 WISEfn 기업모니터 기업개요와 주요제품 매출구성, 네이버 금융 업종 분류를 정리한 것으로, 상세 화면에서 지연 로드합니다.",
             ],
         },
         "stocks": stocks,
@@ -1018,6 +1564,17 @@ def main() -> int:
                 log(f"CI: {rel} 스테이징 완료")
             except Exception as exc:  # noqa: BLE001 - 커밋 단계는 워크플로우가 처리
                 log(f"CI: {rel} 스테이징 생략 ({exc})")
+        # 기업개요 캐시도 함께 커밋해 다음 실행에서 2,500종목을 다시 받지 않게 한다
+        # (내용이 그대로면 git add 해도 변경이 없어 커밋되지 않는다).
+        if not args.no_profiles and os.path.exists(PROFILE_CACHE_PATH):
+            rel_cache = os.path.relpath(PROFILE_CACHE_PATH, BASE_DIR)
+            try:
+                import subprocess
+                subprocess.run(["git", "add", "--", rel_cache], cwd=BASE_DIR,
+                               check=False, timeout=120)
+                log(f"CI: {rel_cache} 스테이징 완료")
+            except Exception as exc:  # noqa: BLE001
+                log(f"CI: {rel_cache} 스테이징 생략 ({exc})")
     log(f"실패 로그: {failed_path} ({len(failed)}건)")
     log(f"총 소요 {elapsed/60:.1f}분")
 
