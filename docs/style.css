@@ -247,7 +247,7 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 48px}
 .table{width:100%}
 .thead,.row{
   display:grid;
-  grid-template-columns:32px minmax(190px,2.15fr) .82fr .9fr .82fr .78fr 1.15fr .95fr 1.1fr 1fr;
+  grid-template-columns:32px minmax(190px,2.3fr) .8fr .86fr .8fr .77fr 1.12fr .93fr 1.05fr .93fr;
   align-items:center;gap:6px;
 }
 .thead{
@@ -310,7 +310,7 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 48px}
 .rsi-val{font-weight:700}
 .rsi-val.cold{color:#0b7285}
 .rsi-val.hot{color:var(--up)}
-.rsi-track{width:64px;height:5px;border-radius:3px;background:var(--track);position:relative;overflow:hidden}
+.rsi-track{width:64px;max-width:100%;height:5px;border-radius:3px;background:var(--track);position:relative;overflow:hidden}
 .rsi-fill{position:absolute;top:0;bottom:0;border-radius:3px;background:linear-gradient(90deg,#6aa5ff,#2f45d0)}
 
 /* volume position badge */
@@ -336,7 +336,7 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 48px}
 .badge.ok{background:var(--ok-soft);color:var(--ok)}
 .badge.no{background:var(--card-3);color:var(--muted)}
 .badge.na{background:transparent;color:var(--muted);border:1px dashed var(--line)}
-.badge-bar{display:inline-block;width:34px;height:4px;border-radius:3px;background:var(--track);overflow:hidden;margin-left:4px;vertical-align:middle}
+.badge-bar{display:inline-block;width:28px;height:4px;border-radius:3px;background:var(--track);overflow:hidden;margin-left:4px;vertical-align:middle}
 .badge-bar > i{display:block;height:100%;background:var(--ok)}
 .badge.no .badge-bar > i{background:var(--muted)}
 
@@ -509,7 +509,16 @@ a.ri .ri-t{color:var(--ink-2)}
 /* ---------- responsive ---------- */
 @media (max-width:1100px){
   .filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .thead,.row{grid-template-columns:32px minmax(168px,2fr) .8fr .88fr .8fr .76fr 1.1fr .92fr 1.06fr .96fr}
+  .thead,.row{grid-template-columns:32px minmax(180px,2.1fr) .79fr .82fr .79fr .75fr 1.08fr .9fr 1.04fr .92fr}
+}
+/* 표 폭이 좁아지는 구간: 값 배지 막대를 줄여 옆 칸으로 넘치지 않게 */
+@media (min-width:901px) and (max-width:1150px){
+  .badge-bar{width:20px}
+}
+@media (min-width:901px) and (max-width:1000px){
+  .badge{font-size:10.5px;padding:2px 5px}
+  .badge-bar{display:none}
+  .fin-badge{font-size:9.5px;padding:2px 4px}
 }
 @media (max-width:900px){
   body{font-size:14.5px}
