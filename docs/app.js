@@ -534,10 +534,10 @@ function detailHtml(s) {
     <div class="section-title">최근 뉴스 <span class="hint">네이버 금융${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.news}건` : ''}</span></div>
     <div class="rlist" id="d-news"><p class="muted rload">불러오는 중…</p></div>
     <div class="links">
-      <a class="primary" href="https://finance.naver.com/item/main.naver?code=${s.c}" target="_blank" rel="noopener">네이버 금융</a>
-      <a href="https://m.stock.naver.com/domestic/stock/${s.c}/notice" target="_blank" rel="noopener">네이버 공시</a>
+      <a class="primary" href="https://stock.naver.com/domestic/stock/${s.c}/price" target="_blank" rel="noopener">네이버 금융</a>
+      <a href="https://stock.naver.com/domestic/stock/${s.c}/notice" target="_blank" rel="noopener">네이버 공시</a>
       <a href="https://dart.fss.or.kr/dsab007/main.do?option=corp&amp;textCrpNm=${encodeURIComponent(s.n)}" target="_blank" rel="noopener">DART 공시</a>
-      <a href="https://finance.naver.com/item/coinfo.naver?code=${s.c}" target="_blank" rel="noopener">기업 실적 분석</a>
+      <a href="https://stock.naver.com/domestic/stock/${s.c}/info/financial" target="_blank" rel="noopener">기업 실적 분석</a>
     </div>
     ${note.length ? `<p class="dnote">⚠ ${note.join(' ')}</p>` : ''}
     <p class="dnote">매물대는 최근 ${P}년 일별 종가·거래량을 20개 가격대로 나눈 분포입니다. 현재가 이하 누적 비중이 낮을수록 위쪽 매물이 적은 하단 구간입니다. 투자 판단 전 공시로 다시 확인하세요.</p>`;
