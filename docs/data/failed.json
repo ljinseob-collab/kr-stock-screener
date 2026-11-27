@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-27T15:38:41+09:00",
+ "generated_at": "2026-11-27T17:20:45+09:00",
  "count": 10,
  "failed": [
   {
@@ -8,19 +8,14 @@
    "reason": "HttpError: 거래일 부족(12일)"
   },
   {
-   "code": "0162D0",
-   "name": "동원파츠",
-   "reason": "HttpError: 거래일 부족(14일)"
-  },
-  {
    "code": "0147B0",
    "name": "래블업",
    "reason": "HttpError: 거래일 부족(19일)"
   },
   {
-   "code": "0153R0",
-   "name": "바로팜",
-   "reason": "HttpError: 거래일 부족(13일)"
+   "code": "0162D0",
+   "name": "동원파츠",
+   "reason": "HttpError: 거래일 부족(14일)"
   },
   {
    "code": "471800",
@@ -28,9 +23,9 @@
    "reason": "HttpError: 거래일 부족(8일)"
   },
   {
-   "code": "498150",
-   "name": "엠비디",
-   "reason": "HttpError: 거래일 부족(4일)"
+   "code": "271160",
+   "name": "하나에어로",
+   "reason": "HttpError: 거래일 부족(6일)"
   },
   {
    "code": "345290",
@@ -43,14 +38,19 @@
    "reason": "HttpError: 거래일 부족(9일)"
   },
   {
+   "code": "0153R0",
+   "name": "바로팜",
+   "reason": "HttpError: 거래일 부족(13일)"
+  },
+  {
+   "code": "498150",
+   "name": "엠비디",
+   "reason": "HttpError: 거래일 부족(4일)"
+  },
+  {
    "code": "495910",
    "name": "이에스티",
    "reason": "HttpError: 거래일 부족(18일)"
-  },
-  {
-   "code": "271160",
-   "name": "하나에어로",
-   "reason": "HttpError: 거래일 부족(6일)"
   }
  ]
 }
