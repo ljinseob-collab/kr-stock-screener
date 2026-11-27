@@ -569,6 +569,8 @@ a.ri .ri-t{color:var(--ink-2)}
   .cell:not(.name):not(.star)::before{content:attr(data-label);font-size:10.5px;color:var(--muted);font-weight:600}
   .cell.num{text-align:left}
   .price-cell{align-items:flex-start}
+  /* 배당 칸은 주당배당금 줄이 있을 때만 10px 높아져 카드 높이가 들쭉날쭉해진다 — 자리를 미리 확보해 모든 카드를 같은 높이로 */
+  .div-cell{align-items:flex-start;min-height:57px}
   .cell.pos{grid-column:1 / -1}
   .cell.pos .vp-pos{flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap}
   .rsi{align-items:flex-start}
