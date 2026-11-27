@@ -256,16 +256,32 @@ def load_universe(log, k200: Optional[Dict[str, str]] = None) -> List[Dict[str, 
         except (TypeError, ValueError):
             marcap = 0.0
         close = rec.get("Close")
-        if not marcap or marcap <= 0:
+        try:
+            shares = float(rec.get("Stocks") or 0)
+        except (TypeError, ValueError):
+            shares = 0.0
+        if math.isnan(shares):
+            shares = 0.0
+        try:                                  # 오늘처럼 Close 가 '-' 로 오는 날이 있다
+            close_v = float(str(close).strip()) if close is not None else 0.0
+            if math.isnan(close_v) or close_v <= 0:
+                close_v = 0.0
+        except (TypeError, ValueError):
+            close_v = 0.0
+        # Marcap 이 비어 오는 날(데이터 소스 일시 장애)이 있다. 상장주식수가 있으면
+        # 통과시켜 두고, 일별 종가를 받은 뒤 시총을 계산한다(build_stock).
+        if (not marcap or marcap <= 0 or math.isnan(marcap)) and shares <= 0:
             excluded["no_price"] += 1
             continue
 
+        marcap_eok = int(round(marcap / 1e8)) if (marcap and not math.isnan(marcap) and marcap > 0) else 0
         rows.append({
             "code": code,
             "name": name,
             "market": "KOSPI" if market == "KOSPI" else "KOSDAQ",
-            "marcap_eok": int(round(marcap / 1e8)),          # 원 → 억원
-            "listing_close": int(close) if close and close == close else None,
+            "marcap_eok": marcap_eok,                        # 원 → 억원 (0이면 build_stock에서 계산)
+            "shares": shares,
+            "listing_close": int(close_v) if close_v else None,
             "k200": 1 if code in k200 else 0,
         })
 
@@ -678,12 +694,15 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
     if len(rows) >= 2 and rows[-2][1] > 0:
         chg = round((rows[-1][1] / rows[-2][1] - 1.0) * 100.0, 2)
 
+    marcap_eok = row.get("marcap_eok") or 0
+    if marcap_eok <= 0 and row.get("shares"):
+        marcap_eok = int(round(price * row["shares"] / 1e8))   # 원 → 억원
     data: Dict[str, Any] = {
         "c": row["code"],
         "n": row["name"],
         "m": "K" if row["market"] == "KOSPI" else "Q",
         "p": price,
-        "mc": row["marcap_eok"],
+        "mc": marcap_eok,
         "nd": len(rows),
     }
     if chg is not None:
@@ -743,8 +762,8 @@ def build_stock(row: Dict[str, Any], start: str, end: str,
             if ni_all:
                 data["ni3"] = 1 if all(v > 0 for v in nis) else 0
             last_op = ops[-1] if ops else None
-            if last_op and last_op > 0 and row["marcap_eok"] > 0:
-                mult = row["marcap_eok"] / last_op
+            if last_op and last_op > 0 and data["mc"] > 0:
+                mult = data["mc"] / last_op
                 data["mult"] = round(mult, 1)
                 data["pass"] = 1 if mult < 10 else 0
     return data
@@ -758,6 +777,31 @@ def _r(v: Optional[float]) -> Optional[int]:
 # 6) 메인
 # ----------------------------------------------------------------------------
 
+def run_us_update(args, log) -> None:
+    """미국주식 데이터 갱신(scripts/update_us_data.py)을 이어서 실행한다.
+
+    GitHub Actions 워크플로우는 update_data.py 만 호출하므로, 여기서 미국 스크립트를
+    이어 돌려 한국·미국 데이터가 함께 자동 갱신되게 한다. 실패해도 국내 데이터
+    저장·커밋은 그대로 진행되도록 예외를 삼킨다.
+    """
+    if getattr(args, "no_us", False):
+        return
+    import subprocess
+    us_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_us_data.py")
+    if not os.path.exists(us_script):
+        return
+    log("[미국] 미국주식 매물대 데이터 갱신 (update_us_data.py)")
+    cmd = [sys.executable, us_script, "--workers", str(getattr(args, "workers", 8))]
+    if getattr(args, "quiet", False):
+        cmd.append("--quiet")
+    try:
+        r = subprocess.run(cmd, cwd=BASE_DIR, timeout=2400)
+        if r.returncode != 0:
+            log(f"  ! 미국 데이터 갱신 실패 (exit {r.returncode}) — 이전 미국 데이터가 유지됩니다")
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ! 미국 데이터 갱신 예외: {exc}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="국내주식 매물대 스크리너 데이터 생성")
     ap.add_argument("--limit", type=int, default=0, help="시총 상위 N개만 (테스트용)")
@@ -769,6 +813,8 @@ def main() -> int:
     ap.add_argument("--no-extras", action="store_true", help="최근 공시·뉴스 수집 생략(속도 테스트)")
     ap.add_argument("--end", type=str, default="", help="기준일 YYYYMMDD (기본: 오늘)")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--no-us", action="store_true",
+                    help="끝에 이어서 도는 미국주식 데이터 갱신(update_us_data.py)을 생략")
     ap.add_argument("--resume", action="store_true",
                     help="같은 기준일의 수집 캐시(.cache/)가 있으면 이어서 수집")
     args = ap.parse_args()
@@ -804,6 +850,7 @@ def main() -> int:
         f"코스닥 {sum(1 for u in universe if u['market']=='KOSDAQ'):,})")
     if not universe:
         log("대상 종목이 없습니다.")
+        run_us_update(args, log)
         return 1
 
     results: Dict[str, Dict[str, Any]] = {}
@@ -982,6 +1029,14 @@ def main() -> int:
             reasons[key] = reasons.get(key, 0) + 1
         for k, v in sorted(reasons.items(), key=lambda x: -x[1])[:6]:
             log(f"  - {k}: {v}건")
+
+    # ------------------------------------------------------------------
+    # 미국주식 데이터도 같은 실행에서 갱신한다.
+    # GitHub Actions 워크플로우(.github/workflows/daily-update.yml)는 이 스크립트만
+    # 호출하므로, 여기서 update_us_data.py 를 이어 실행해 한국·미국 데이터가 함께
+    # 자동 갱신되게 한다. 실패해도 국내 데이터 커밋은 그대로 진행한다.
+    # ------------------------------------------------------------------
+    run_us_update(args, log)
     return 0
 
 

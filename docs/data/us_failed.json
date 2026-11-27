@@ -1,0 +1,11 @@
+{
+ "generated_at": "2026-11-27T14:23:23+09:00",
+ "count": 1,
+ "failed": [
+  {
+   "code": "TCBI",
+   "name": "Texas Capital Bancshares",
+   "reason": "RuntimeError: 거래일 부족(3일)"
+  }
+ ]
+}

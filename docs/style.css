@@ -81,6 +81,24 @@ button{font-family:inherit;font-size:inherit;cursor:pointer;color:inherit}
 .logo svg{display:block}
 .brand h1{font-size:19px;letter-spacing:-.02em;font-weight:750}
 .tagline{margin-top:2px;font-size:12.5px;color:var(--muted)}
+
+/* ---------- 🇰🇷 국내 / 🇺🇸 미국 탭 ---------- */
+.tabs{
+  display:flex;gap:4px;padding:4px;border-radius:13px;background:var(--seg-bg);
+  border:1px solid var(--line-2);flex:0 0 auto;
+}
+.tab{
+  border:0;background:none;border-radius:10px;padding:8px 16px;
+  font-size:14px;font-weight:700;color:var(--muted);letter-spacing:-.01em;
+  white-space:nowrap;transition:background .12s,color .12s,box-shadow .12s;
+}
+.tab:hover{color:var(--ink)}
+.tab.active{background:var(--card);color:var(--accent);box-shadow:0 1px 3px rgba(16,24,40,.14)}
+.tab[aria-selected="true"]{color:var(--accent)}
+.tab.loading{opacity:.6}
+
+/* 수익원이 없는 국내 탭에서 숨기는 프리셋 등 */
+body[data-tab="kr"] .preset-us{display:none}
 .status{
   font-size:12.5px;color:var(--ink-2);background:var(--accent-soft);
   border:1px solid var(--accent-line);border-radius:999px;padding:6px 12px;white-space:nowrap;
@@ -251,6 +269,16 @@ main{max-width:1280px;margin:0 auto;padding:16px 20px 48px}
 .mkt.K{background:var(--accent-soft);color:var(--accent)}
 .mkt.Q{background:#fdf0f6;color:#a2196c}
 .mkt.k200{background:var(--warn-soft);color:var(--warn);border:1px solid var(--star-line)}
+.mkt.US{background:var(--accent-soft);color:var(--accent)}
+.mkt.NY{background:#eef6ff;color:#175cd3}
+.mkt.ndx{background:#eef1ff;color:#3538cd;border:1px solid var(--accent-line)}
+
+/* 주요 수익원 한 줄 (목록) */
+.rev-line{
+  font-size:11.5px;line-height:1.35;color:var(--ink-2);font-weight:600;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
+}
+.rev-line::before{content:"💰";font-size:10px;margin-right:4px;opacity:.75;font-weight:400}
 .mini{font-size:10.5px;font-weight:700;padding:1px 5px;border-radius:4px;background:var(--warn-soft);color:var(--warn);white-space:nowrap}
 .price{font-weight:700}
 .price-cell{display:flex;flex-direction:column;align-items:flex-end;gap:1px}
@@ -425,6 +453,27 @@ table.fin td.pos{color:var(--ink)}
 .links a:hover{filter:brightness(.97)}
 .dnote{margin-top:14px;font-size:11.5px;color:var(--muted);line-height:1.5}
 
+/* ---------- 상세: 주요 수익원 · 사업 구조 ---------- */
+.revbox{
+  background:linear-gradient(180deg,var(--accent-soft),var(--card-2));
+  border:1px solid var(--accent-line);border-radius:12px;padding:12px 13px;
+}
+.rev-chips{display:flex;flex-wrap:wrap;gap:6px}
+.rev-chip{
+  display:inline-flex;align-items:center;font-size:12px;font-weight:750;letter-spacing:-.01em;
+  padding:4px 9px;border-radius:999px;background:var(--card);color:var(--accent);
+  border:1px solid var(--accent-line);white-space:nowrap;
+}
+.rev-detail{margin-top:9px;font-size:13px;line-height:1.6;color:var(--ink-2);word-break:keep-all}
+.revbox .rload{padding:8px 0 0;font-size:12px}
+.rev-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:9px}
+.rev-meta{font-size:11.5px;color:var(--muted)}
+.rev-site{
+  margin-left:auto;font-size:12px;font-weight:700;color:var(--accent);text-decoration:none;
+  padding:4px 9px;border-radius:8px;border:1px solid var(--accent-line);background:var(--card);
+}
+.rev-site:hover{text-decoration:underline}
+
 /* ---------- 상세: 최근 공시·뉴스 ---------- */
 .rlist{
   display:flex;flex-direction:column;background:var(--card-2);
@@ -467,6 +516,8 @@ a.ri .ri-t{color:var(--ink-2)}
   .topbar-inner{padding:10px 14px}
   .brand h1{font-size:17px}
   .tagline{display:none}
+  .tabs{order:3;width:100%;justify-content:stretch}
+  .tab{flex:1 1 0;text-align:center;padding:8px 10px;font-size:13.5px}
   /* 상단 상태 줄이 길어 화면 밖으로 밀리지 않게 줄바꿈 허용 */
   .status{white-space:normal;font-size:11.5px;line-height:1.35;padding:5px 10px}
   .presets{
@@ -596,6 +647,11 @@ a.ri .ri-t{color:var(--ink-2)}
   .mkt.K{background:var(--accent-soft);color:#a9b7ff}
   .mkt.Q{background:#3a1c2c;color:#ff9ecb}
   .mkt.k200{background:#33260a;color:#fbbf24;border-color:#6b4e13}
+  .mkt.US{background:var(--accent-soft);color:#a9b7ff}
+  .mkt.NY{background:#12284a;color:#8ab6ff}
+  .mkt.ndx{background:#1e2b4e;color:#aab6ff;border-color:#33456f}
+  .rev-chip{background:#18233a;border-color:var(--accent-line);color:#aab6ff}
+  .revbox{background:linear-gradient(180deg,#16203a,var(--card-2));border-color:var(--accent-line)}
   .rsi-val.cold{color:#5ad4e0}
   .rsi-fill{background:linear-gradient(90deg,#7f9dff,#8a9cff)}
   .detail-backdrop{background:rgba(0,0,0,.62)}

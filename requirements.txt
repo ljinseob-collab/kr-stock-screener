@@ -2,3 +2,4 @@
 requests>=2.32
 pandas>=2.2
 finance-datareader>=0.9.100
+lxml>=5.0

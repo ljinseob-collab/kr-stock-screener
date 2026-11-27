@@ -1,13 +1,34 @@
-/* 국내주식 매물대 스크리너 — 정적 대시보드 (외부 라이브러리 없음) */
+/* 국내·미국 주식 매물대 스크리너 — 정적 대시보드 (외부 라이브러리 없음) */
 'use strict';
 
 const PAGE = 60;
 const WATCH_KEY = 'krscreener.watch.v1';   // ⭐ 관심종목 (이 브라우저에만 저장)
+const TABS = {
+  kr: {
+    title: '국내주식 매물대 스크리너',
+    tagline: '1~5년 매물대 · 평균단가 · RSI(14) · 배당 · 3년 실적 · 공시·뉴스',
+    foot: '매일 장 마감 후 자동 갱신 (평일 17:00 KST)',
+    data: 'data/stocks.json',
+    extras: 'data/extras'
+  },
+  us: {
+    title: '미국주식 매물대 스크리너',
+    tagline: 'S&P 500 · NASDAQ 100 · S&P 400 · 1~5년 매물대 · 주요 수익원 · 배당',
+    foot: '매일 미국장 마감 후 자동 갱신 (평일 17:00 KST)',
+    data: 'data/us_stocks.json',
+    meta: 'data/us_meta.json',
+    extras: 'data/us_extras'
+  }
+};
+
 const state = {
-  all: [],        // 전체 종목
+  tab: 'kr',      // 현재 탭: 'kr' | 'us'
+  all: [],        // 현재 탭 전체 종목
   rows: [],       // 필터·정렬 결과
   shown: 0,
   meta: null,
+  cache: { kr: null, us: null },   // 탭별 로드 결과 {all, meta}
+  loading: false,
   filters: {
     market: 'all', profit: 'all', value: false, cum: 'all',
     vwap: false, rsiMin: null, rsiMax: null, div: false, divMin: 0, q: '', sort: 'mc'
@@ -18,8 +39,11 @@ const state = {
   watchOnly: false    // ⭐ 관심종목만 보기
 };
 
+const isUS = () => state.tab === 'us';
+
 /* ---------------- 포맷 ---------------- */
 const nf = new Intl.NumberFormat('ko-KR');
+const nfUSD = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtInt = v => (v === null || v === undefined || Number.isNaN(v)) ? '–' : nf.format(Math.round(v));
 
 function fmtEok(v) {
@@ -31,6 +55,38 @@ function fmtEok(v) {
   }
   return nf.format(Math.round(v)) + '억';
 }
+
+/* 달러 금액을 $5.17T · $158.1B · $850M 처럼 줄여 쓴다 */
+function usdCompact(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '–';
+  const a = Math.abs(v), sign = v < 0 ? '-' : '';
+  if (a >= 1e12) return sign + '$' + (a / 1e12).toFixed(a >= 1e13 ? 1 : 2) + 'T';
+  if (a >= 1e9) return sign + '$' + (a / 1e9).toFixed(a >= 1e11 ? 0 : 1) + 'B';
+  if (a >= 1e6) return sign + '$' + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M';
+  if (a >= 1e3) return sign + '$' + (a / 1e3).toFixed(1) + 'K';
+  return sign + '$' + a.toFixed(0);
+}
+
+/* 조·억 달러 (상세 화면 보조 표기) */
+function usdKorean(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '';
+  const a = Math.abs(v);
+  if (a >= 1e12) {
+    const jo = Math.floor(a / 1e12);
+    const eok = Math.round((a % 1e12) / 1e8);
+    return `약 ${nf.format(jo)}조 ${eok ? nf.format(eok) + '억' : ''} 달러`;
+  }
+  if (a >= 1e8) return `약 ${nf.format(Math.round(a / 1e8))}억 달러`;
+  return `$${nf.format(Math.round(a))}`;
+}
+
+const fmtPrice = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
+  : (isUS() ? '$' + nfUSD.format(v) : nf.format(Math.round(v)));
+const fmtCap = v => isUS() ? usdCompact(v) : fmtEok(v);
+const fmtMoney = v => isUS() ? usdCompact(v) : fmtEok(v);
+const fmtDps = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
+  : (isUS() ? '$' + (v < 10 ? v.toFixed(2) : nfUSD.format(v)) : fmtInt(v) + '원');
+const unitTxt = () => isUS() ? 'USD' : '원';
 const fmtPct = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
   : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
 const fmtDy = v => (v === null || v === undefined || Number.isNaN(v)) ? '–' : v.toFixed(2) + '%';
@@ -38,6 +94,11 @@ const fmtChg = v => (v === null || v === undefined || Number.isNaN(v)) ? '–'
   : (v > 0 ? '+' : '') + v.toFixed(2) + '%';
 const signCls = v => (v === null || v === undefined) ? '' : (v > 0 ? 'pos' : (v < 0 ? 'neg' : ''));
 const mktName = m => (m === 'K' ? '코스피' : '코스닥');
+const idxBadges = s => {
+  if (!isUS()) return s.k200 === 1 ? '<span class="mkt k200">K200</span>' : '';
+  return (s.p500 === 1 ? '<span class="mkt k200">S&amp;P500</span>' : '') +
+    (s.ndx === 1 ? '<span class="mkt ndx">NDX</span>' : '');
+};
 
 /* 생성 시각을 한국 시간으로 (CI 러너는 UTC로 기록하므로 브라우저에서 KST로 변환) */
 function kstStamp(iso) {
@@ -95,39 +156,119 @@ const finBadge = (st, who, full, extraCls = '') => {
     `${tag}${st.icon} ${st.label}</span>`;
 };
 
-/* ---------------- 데이터 로드 ---------------- */
-async function load() {
-  const res = await fetch('data/stocks.json', { cache: 'no-cache' });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  state.meta = data.meta;
-  state.all = data.stocks || [];
-  loadWatch();
+/* ---------------- 데이터 로드 (국내·미국 탭) ---------------- */
+function setStatus(text, warn) {
+  const st = document.getElementById('status');
+  if (!st) return;
+  st.textContent = text;
+  st.classList.toggle('warn', !!warn);
+}
+
+async function loadTab(tab) {
+  if (!TABS[tab]) return;
+  if (state.cache[tab]) { activateTab(tab); return; }
+  if (state.loading) return;
+  state.loading = true;
+  setStatus(tab === 'us' ? '미국 종목 데이터 불러오는 중…' : '데이터 불러오는 중…');
+  document.querySelector('.tab[data-tab="' + tab + '"]')?.classList.add('loading');
+  try {
+    if (tab === 'us') {
+      const [sres, mres] = await Promise.all([
+        fetch(TABS.us.data, { cache: 'no-cache' }),
+        fetch(TABS.us.meta, { cache: 'no-cache' })
+      ]);
+      if (!sres.ok) throw new Error('HTTP ' + sres.status);
+      if (!mres.ok) throw new Error('HTTP ' + mres.status);
+      const [sdata, meta] = await Promise.all([sres.json(), mres.json()]);
+      state.cache.us = { all: sdata.stocks || [], meta };
+    } else {
+      const res = await fetch(TABS.kr.data, { cache: 'no-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      state.cache.kr = { all: data.stocks || [], meta: data.meta };
+    }
+    activateTab(tab);
+  } catch (err) {
+    setStatus((tab === 'us' ? '미국' : '국내') + ' 데이터를 불러오지 못했습니다: ' + err.message, true);
+    console.error(err);
+  } finally {
+    state.loading = false;
+    document.querySelector('.tab[data-tab="' + tab + '"]')?.classList.remove('loading');
+  }
+}
+
+async function switchTab(tab) {
+  if (tab === state.tab && state.cache[tab]) return;
+  await loadTab(tab);
+}
+
+function activateTab(tab) {
+  state.tab = tab;
+  document.body.dataset.tab = tab;
+  const t = TABS[tab];
+  document.getElementById('app-title').textContent = t.title;
+  document.getElementById('app-tagline').textContent = t.tagline;
+  document.getElementById('foot-note').textContent = t.foot;
+  document.title = t.title + ' · 1~5년 매물대·재무·배당·RSI';
+  document.querySelectorAll('.tab').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-guide]').forEach(g => { g.hidden = g.dataset.guide !== tab; });
+  const c = state.cache[tab];
+  if (c) { state.all = c.all; state.meta = c.meta; }
+  setIndexOptions();
   initMeta();
-  initFilterToggle();
-  applyPreset('all');
-  bindEvents();
+  applyPreset('all', false);
+  syncPeriodBtns();
+  updatePeriodLabels();
+  filterRows();
+  updateWatchCount();
+  updateThLabels();
+}
+
+function setIndexOptions() {
+  const sel = document.getElementById('f-market');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = isUS()
+    ? '<option value="all">전체</option><option value="SP500">S&amp;P 500</option><option value="NDX">나스닥 100</option>'
+    : '<option value="all">전체</option><option value="K">코스피</option><option value="Q">코스닥</option><option value="K200">코스피200</option>';
+  sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'all';
+  const lbl = document.getElementById('lbl-market');
+  if (lbl) lbl.textContent = isUS() ? '지수' : '시장';
+}
+
+function updateThLabels() {
+  const cap = document.getElementById('lbl-th-cap');
+  if (cap) cap.textContent = isUS() ? '시가총액 (USD)' : '시가총액';
 }
 
 function initMeta() {
   const m = state.meta;
-  document.getElementById('status').textContent =
-    `기준일 ${m.as_of} · ${nf.format(m.count)}종목 · ${m.years}년 일봉 · 매물대 ${state.period}년` +
-    (m.k200_count ? ` · 코스피200 ${nf.format(m.k200_count)}` : '');
-  document.getElementById('status').classList.remove('warn');
-  document.getElementById('total').textContent = nf.format(m.count);
-  document.getElementById('generated').textContent =
-    `데이터 생성 ${kstStamp(m.generated_at)}` +
-    (m.failed ? ` · 상장 직후 등으로 데이터가 부족한 ${m.failed}종목 제외` : '');
+  if (!m) return;
+  const idx = isUS()
+    ? (m.sp500_count ? ` · S&P500 ${nf.format(m.sp500_count)}` : '')
+    : (m.k200_count ? ` · 코스피200 ${nf.format(m.k200_count)}` : '');
+  setStatus(`기준일 ${m.as_of} · ${nf.format(m.count)}종목 · ${m.years}년 일봉 · 매물대 ${state.period}년` + idx);
+  const total = document.getElementById('total');
+  if (total) total.textContent = nf.format(m.count);
+  const gen = document.getElementById('generated');
+  if (gen) gen.textContent = `데이터 생성 ${kstStamp(m.generated_at)}` +
+    (m.failed ? ` · 데이터가 부족해 제외한 ${m.failed}종목` : '');
 
   const cnt = {
     all: state.all.length,
     bottom: state.all.filter(s => (cumOf(s) ?? 100) <= 30 && s.rsi > 0 && s.rsi <= 35).length,
-    mine: state.all.filter(isMine).length
+    mine: state.all.filter(isMine).length,
+    value: state.all.filter(s => { const op = finState(s, 1); return op && op.key === 'green' && s.pass === 1; }).length
   };
-  document.getElementById('cnt-all').textContent = nf.format(cnt.all);
-  document.getElementById('cnt-bottom').textContent = nf.format(cnt.bottom);
-  document.getElementById('cnt-mine').textContent = nf.format(cnt.mine);
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = nf.format(v); };
+  set('cnt-all', cnt.all);
+  set('cnt-bottom', cnt.bottom);
+  set('cnt-mine', cnt.mine);
+  set('cnt-value', cnt.value);
   updateWatchCount();
 }
 
@@ -203,7 +344,10 @@ function filterRows() {
   const f = state.filters;
   const q = f.q.trim().toLowerCase();
   let out = state.all.filter(s => {
-    if (f.market === 'K200') { if (s.k200 !== 1) return false; }
+    if (isUS()) {
+      if (f.market === 'SP500' && s.p500 !== 1) return false;
+      if (f.market === 'NDX' && s.ndx !== 1) return false;
+    } else if (f.market === 'K200') { if (s.k200 !== 1) return false; }
     else if (f.market !== 'all' && s.m !== f.market) return false;
     if (f.profit !== 'all') {
       const op = finState(s, 1);
@@ -229,7 +373,8 @@ function filterRows() {
       if (f.rsiMin !== null && s.rsi < f.rsiMin) return false;
       if (f.rsiMax !== null && s.rsi > f.rsiMax) return false;
     }
-    if (q && !(s.n.toLowerCase().includes(q) || s.c.includes(q))) return false;
+    if (q && !(s.n.toLowerCase().includes(q) || s.c.toLowerCase().includes(q)
+      || (s.revShort || '').toLowerCase().includes(q))) return false;
     if (f.div && !(s.dps > 0)) return false;
     if (f.divMin > 0 && !((s.dy ?? 0) >= f.divMin)) return false;
     if (state.watchOnly && !state.watch.has(s.c)) return false;
@@ -281,23 +426,30 @@ function rowHtml(s) {
   const chgHtml = chg === null ? ''
     : `<span class="chg ${signCls(chg)}" title="전일 종가 대비 등락률">${fmtChg(chg)}</span>`;
 
+  /* 주요 수익원 한 줄 (미국 탭 데이터에 revShort 가 있으면 표시) */
+  const rev = s.revShort ? `<div class="rev-line" title="주요 수익원">${esc(s.revShort)}</div>` : '';
+  const codeLine = isUS()
+    ? `<div class="code-line"><span>${s.c}</span><span class="mkt ${s.x === 'NYSE' ? 'NY' : 'US'}">${esc(s.x || 'US')}</span>${idxBadges(s)}</div>`
+    : `<div class="code-line"><span>${s.c}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${idxBadges(s)}</div>`;
+
   return `<div class="row" data-code="${s.c}" role="row" tabindex="0">
     <div class="cell star">${starBtn(s.c)}</div>
     <div class="cell name">
       <div class="name-line"><span class="stock-name">${esc(s.n)}</span>${short}${stale}</div>
-      <div class="code-line"><span>${s.c}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${s.k200 === 1 ? '<span class="mkt k200">K200</span>' : ''}</div>
+      ${rev}
+      ${codeLine}
     </div>
-    <div class="cell num price-cell" data-label="현재가"><span class="price">${fmtInt(s.p)}</span>${chgHtml}</div>
-    <div class="cell num" data-label="시가총액">${fmtEok(s.mc)}</div>
-    <div class="cell num div-cell" data-label="배당" title="${s.dps > 0 ? `${s.dvy}년 주당배당금 ${fmtInt(s.dps)}원 ÷ 현재가` : '최근 사업연도 배당 없음'}">
+    <div class="cell num price-cell" data-label="현재가"><span class="price">${fmtPrice(s.p)}</span>${chgHtml}</div>
+    <div class="cell num" data-label="시가총액">${fmtCap(s.mc)}</div>
+    <div class="cell num div-cell" data-label="배당" title="${s.dps > 0 ? `주당배당금 ${fmtDps(s.dps)} ÷ 현재가` : '최근 1년 배당 없음'}">
       <span class="div-y ${s.dy >= 3 ? 'hi' : ''}">${fmtDy(s.dy)}</span>
-      ${s.dps > 0 ? `<span class="sub">${fmtInt(s.dps)}원</span>` : ''}
+      ${s.dps > 0 ? `<span class="sub">${fmtDps(s.dps)}</span>` : ''}
     </div>
     <div class="cell num" data-label="RSI(14)">
       <div class="rsi"><span class="rsi-val ${rsiCls}">${rsi ? rsi.toFixed(1) : '–'}</span>
       <div class="rsi-track"><div class="rsi-fill" style="width:${rsiWidth}%"></div></div></div>
     </div>
-    <div class="cell num pos" data-label="매물대 위치" title="${state.period}년 거래량 누적 ${cumTxt}% · POC ${fmtInt(vp.poc)}원">
+    <div class="cell num pos" data-label="매물대 위치" title="${state.period}년 거래량 누적 ${cumTxt}% · POC ${fmtPrice(vp.poc)}">
       <div class="vp-pos">${posBadge(cum)}
       <span class="pos-gap ${gapCls(pg)}">최대 매물대 ${fmtPct(pg)}</span></div>
     </div>
@@ -332,8 +484,14 @@ function renderRows(append) {
    두었고, 상세 화면을 열 때 그 종목이 든 파일 하나만 받아 캐시한다. */
 const EXT_CACHE = {};
 
+/* 국내: 종목코드 숫자 합 % 16 (서버와 같은 방식) · 미국: 티커 문자코드 합 % 16 */
 function shardOf(code) {
   const n = state.meta && state.meta.extra ? state.meta.extra.shards : 16;
+  if (isUS()) {
+    let s = 0;
+    for (const ch of String(code)) s += ch.charCodeAt(0);
+    return s % n;
+  }
   let s = 0;
   for (const ch of String(code)) if (ch >= '0' && ch <= '9') s += Number(ch);
   return s % n;
@@ -345,14 +503,17 @@ function extVersion() {
 }
 
 async function loadExtras(s) {
+  const tab = state.tab;
+  const base = TABS[tab].extras;
   const shard = shardOf(s.c);
+  const key = tab + ':' + shard;
   try {
-    if (!EXT_CACHE[shard]) {
-      const res = await fetch(`data/extras/${shard}.json?v=${extVersion()}`, { cache: 'no-cache' });
+    if (!EXT_CACHE[key]) {
+      const res = await fetch(`${base}/${shard}.json?v=${extVersion()}`, { cache: 'no-cache' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      EXT_CACHE[shard] = await res.json();
+      EXT_CACHE[key] = await res.json();
     }
-    renderExtras(s.c, EXT_CACHE[shard][s.c] || null);
+    renderExtras(s.c, EXT_CACHE[key][s.c] || null);
   } catch (err) {
     renderExtras(s.c, null, true);
   }
@@ -385,30 +546,69 @@ function renderExtras(code, x, failed) {
   const dBox = document.getElementById('d-disc');
   const nBox = document.getElementById('d-news');
   const panel = document.getElementById('detail');
-  if (!dBox || !nBox || panel.hidden || panel.dataset.code !== code) return;
+  if (!nBox || !panel || panel.hidden || panel.dataset.code !== code) return;
+  renderRev(x, failed);
 
   if (failed) {
-    const msg = '<p class="muted rload">공시·뉴스를 불러오지 못했습니다.</p>';
-    dBox.innerHTML = msg; nBox.innerHTML = msg;
+    const msg = '<p class="muted rload">정보를 불러오지 못했습니다.</p>';
+    if (dBox) dBox.innerHTML = msg;
+    nBox.innerHTML = msg;
     return;
   }
 
-  const discs = (x && x.d) || [];
-  dBox.innerHTML = discs.length
-    ? discs.map(r => `<div class="ri"><span class="ri-d">${mmdd(r[0])}</span>` +
-        `<span class="ri-t">${discTags(r[1])}${esc(r[1])}</span></div>`).join('')
-    : '<p class="muted rload">최근 공시가 없습니다.</p>';
+  if (dBox) {
+    const discs = (x && x.d) || [];
+    dBox.innerHTML = discs.length
+      ? discs.map(r => `<div class="ri"><span class="ri-d">${mmdd(r[0])}</span>` +
+          `<span class="ri-t">${discTags(r[1])}${esc(r[1])}</span></div>`).join('')
+      : '<p class="muted rload">최근 공시가 없습니다.</p>';
+  }
 
   const news = (x && x.n) || [];
   nBox.innerHTML = news.length
     ? news.map(r => {
-        const link = /^\d{3}\/\d+$/.test(r[3] || '') ? `https://n.news.naver.com/mnews/article/${r[3]}` : '';
+        const link = newsHref(r[3]);
         const inner = `<span class="ri-d">${mmdd(r[0])}</span>` +
           `<span class="ri-t">${esc(r[1])}<span class="ri-m">${esc(r[2] || '')}</span></span>`;
-        return link ? `<a class="ri" href="${link}" target="_blank" rel="noopener">${inner}</a>`
+        return link ? `<a class="ri" href="${esc(link)}" target="_blank" rel="noopener">${inner}</a>`
           : `<div class="ri">${inner}</div>`;
       }).join('')
     : '<p class="muted rload">최근 뉴스가 없습니다.</p>';
+}
+
+function isSafeLink(u) {
+  return /^https?:\/\/[^\s"'<>]+$/.test(String(u || ''));
+}
+
+/* 국내 뉴스는 'officeId/articleId', 미국 뉴스는 완전한 URL 로 저장된다 */
+function newsHref(v) {
+  const s = String(v || '');
+  if (isSafeLink(s)) return s;
+  if (!isUS() && /^\d{3}\/\d+$/.test(s)) return `https://n.news.naver.com/mnews/article/${s}`;
+  return '';
+}
+
+/* 상세 화면 「주요 수익원 · 사업 구조」 */
+function renderRev(x, failed) {
+  const box = document.getElementById('d-rev');
+  if (!box) return;
+  const existing = box.querySelector('.rev-chips');
+  if (failed) {
+    if (!existing) box.innerHTML = '<p class="muted rload">사업 구조를 불러오지 못했습니다.</p>';
+    return;
+  }
+  const detail = (x && x.revDetail) || '';
+  const meta = [x && x.s, x && x.i].filter(Boolean).join(' · ');
+  const site = (x && x.w && isSafeLink(x.w))
+    ? `<a class="rev-site" href="${esc(x.w)}" target="_blank" rel="noopener">${esc(siteHost(x.w))} ↗</a>` : '';
+  const chips = existing ? existing.outerHTML : '';
+  box.innerHTML = chips +
+    (detail ? `<p class="rev-detail">${esc(detail)}</p>` : '') +
+    `<div class="rev-foot">${meta ? `<span class="rev-meta">${esc(meta)}</span>` : ''}${site}</div>`;
+}
+
+function siteHost(u) {
+  try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return '기업 홈페이지'; }
 }
 
 /* ---------------- 상세 패널 ---------------- */
@@ -420,9 +620,11 @@ function openDetail(code, keepPos) {
   const wasOpen = !d.hidden && d.dataset.code === code;
   d.dataset.code = code;
   document.getElementById('d-name').textContent = s.n;
-  document.getElementById('d-sub').textContent =
-    `${s.c} · ${mktName(s.m)}${s.k200 === 1 ? ' · 코스피200' : ''} · 일봉 ${nf.format(s.nd || 0)}일 · 매물대 ${state.period}년` +
-    (s.ld ? ` · 최근 거래 ${s.ld}` : '');
+  document.getElementById('d-sub').textContent = isUS()
+    ? `${s.c} · ${s.x || 'US'}${s.p500 === 1 ? ' · S&P 500' : ''}${s.ndx === 1 ? ' · 나스닥 100' : ''} · 일봉 ${nf.format(s.nd || 0)}일 · 매물대 ${state.period}년` +
+      (s.ld ? ` · 최근 거래 ${s.ld}` : '')
+    : `${s.c} · ${mktName(s.m)}${s.k200 === 1 ? ' · 코스피200' : ''} · 일봉 ${nf.format(s.nd || 0)}일 · 매물대 ${state.period}년` +
+      (s.ld ? ` · 최근 거래 ${s.ld}` : '');
   const star = document.getElementById('d-star');
   if (star) star.dataset.star = code;
   refreshStars(code);
@@ -455,24 +657,25 @@ function detailHtml(s) {
     : `<span class="dchg ${signCls(chg)}">${fmtChg(chg)}</span><span class="dchg-lbl">전일 대비</span>`;
 
   const stats = `
-  <div class="price-row"><span class="big">${fmtInt(s.p)}</span><span class="unit">원 · 현재가</span>${chgTag}</div>
+  <div class="price-row"><span class="big">${fmtPrice(s.p)}</span><span class="unit">${isUS() ? 'USD · 현재가' : '원 · 현재가'}</span>${chgTag}</div>
   <div class="dstats">
     <div class="dstat span2">
       <div class="k">매물대 위치 <span class="muted">· ${P}년</span></div>
       <div class="v">${posBadge(cum)}</div>
       <div class="dsub ${gapCls(pg)}">최대 매물대 대비 ${fmtPct(pg)} <span class="muted">(누적 ${cumTxt}%)</span></div>
     </div>
-    <div class="dstat"><div class="k">POC (최대 매물대)</div><div class="v">${fmtInt(vp.poc)}<small>원</small></div></div>
-    <div class="dstat"><div class="k">시가총액</div><div class="v">${fmtEok(s.mc)}</div></div>
+    <div class="dstat"><div class="k">POC (최대 매물대)</div><div class="v">${fmtPrice(vp.poc)}</div></div>
+    <div class="dstat"><div class="k">시가총액</div><div class="v">${fmtCap(s.mc)}</div>
+      ${isUS() ? `<div class="dsub">${usdKorean(s.mc)}</div>` : ''}</div>
     <div class="dstat"><div class="k">RSI(14)</div><div class="v ${s.rsi >= 70 ? 'pos' : ''}">${s.rsi ? s.rsi.toFixed(1) : '–'}</div></div>
-    <div class="dstat"><div class="k">${P}년 평균단가</div><div class="v">${fmtInt(vp.vwap)}<small>원·${fmtPct(vg)}</small></div></div>
+    <div class="dstat"><div class="k">${P}년 평균단가</div><div class="v">${fmtPrice(vp.vwap)}<small>${fmtPct(vg)}</small></div></div>
     <div class="dstat span2">
-      <div class="k">배당수익률 <span class="muted">· ${s.dps > 0 && s.dvy ? `${s.dvy}년 배당` : '최근 사업연도'}</span></div>
+      <div class="k">배당수익률 <span class="muted">· ${s.dps > 0 ? (isUS() ? '최근 1년 배당' : `${s.dvy}년 배당`) : '최근 사업연도'}</span></div>
       <div class="v ${s.dy >= 3 ? 'pos' : ''}">${s.dps > 0 ? s.dy.toFixed(2) : '–'}<small>${s.dps > 0 ? '%' : ''}</small></div>
       <div class="dsub">${s.dps > 0 ? `현재가 기준${s.dy >= 3 ? ' · 고배당(3%↑)' : ''}` : '무배당'}</div>
     </div>
-    <div class="dstat"><div class="k">주당배당금</div><div class="v">${s.dps > 0 ? fmtInt(s.dps) : '–'}<small>${s.dps > 0 ? '원' : ''}</small></div>
-      <div class="dsub">${s.dps > 0 ? `${s.dvy}년` : '무배당'}</div></div>
+    <div class="dstat"><div class="k">주당배당금</div><div class="v">${s.dps > 0 ? fmtDps(s.dps) : '–'}</div>
+      <div class="dsub">${s.dps > 0 ? (isUS() ? '최근 1년 합계' : `${s.dvy}년`) : '무배당'}</div></div>
   </div>`;
 
   /* --- 매물대 차트 --- */
@@ -493,10 +696,10 @@ function detailHtml(s) {
   const years = fin.map(r => (s.fm && s.fm !== 12 ? `${r[0]}.${String(s.fm).padStart(2, '0')}` : `${r[0]}`));
   const finTable = fin.length ? `
     <table class="fin">
-      <thead><tr><th>구분 (억원)</th>${years.map(y => `<th>${y}</th>`).join('')}</tr></thead>
+      <thead><tr><th>구분 (${isUS() ? 'USD' : '억원'})</th>${years.map(y => `<th>${y}</th>`).join('')}</tr></thead>
       <tbody>
-        <tr><td>영업이익</td>${fin.map(r => `<td class="${r[1] < 0 ? 'neg' : (r[1] === null ? '' : 'pos')}">${fmtInt(r[1])}</td>`).join('')}</tr>
-        <tr><td>당기순이익</td>${fin.map(r => `<td class="${r[2] < 0 ? 'neg' : (r[2] === null ? '' : 'pos')}">${fmtInt(r[2])}</td>`).join('')}</tr>
+        <tr><td>영업이익</td>${fin.map(r => `<td class="${r[1] < 0 ? 'neg' : (r[1] === null ? '' : 'pos')}">${fmtMoney(r[1])}</td>`).join('')}</tr>
+        <tr><td>당기순이익</td>${fin.map(r => `<td class="${r[2] < 0 ? 'neg' : (r[2] === null ? '' : 'pos')}">${fmtMoney(r[2])}</td>`).join('')}</tr>
       </tbody>
     </table>`
     : `<p class="muted" style="font-size:13px">연간 실적 데이터가 없습니다(신규 상장·자료 미제공 등).</p>`;
@@ -510,10 +713,10 @@ function detailHtml(s) {
     cmp = `<div class="cmp">
       <div class="cmp-row"><span class="lbl">시가총액</span>
         <div class="cmp-track"><div class="cmp-bar mc" style="width:${(s.mc / max * 100).toFixed(1)}%"></div></div>
-        <span class="val">${fmtEok(s.mc)}</span></div>
+        <span class="val">${fmtCap(s.mc)}</span></div>
       <div class="cmp-row"><span class="lbl">영업이익×10</span>
         <div class="cmp-track"><div class="cmp-bar ten" style="width:${(ten / max * 100).toFixed(1)}%"></div></div>
-        <span class="val">${fmtEok(ten)}</span></div>
+        <span class="val">${fmtCap(ten)}</span></div>
       <div class="cmp-note">영업이익 배수(시총÷영업이익) <b>${s.mult ? s.mult.toFixed(2) + '배' : '–'}</b> ·
         ${s.pass === 1 ? '<b>기준 통과</b> (10배 미만)' : '<b>기준 미달</b> (10배 이상)'}</div>
     </div>`;
@@ -523,24 +726,61 @@ function detailHtml(s) {
   if (s.nd && s.nd < 250) note.push(`상장 1년 미만이라 매물대가 ${s.nd}거래일치만 반영됩니다.`);
   if (s.ld) note.push(`최근 거래일이 ${s.ld}로 기준일과 다릅니다(거래정지·관리종목 등).`);
 
-  return `${stats}${chart}
-    <div class="section-title">3년 실적 <span class="hint">네이버 금융 연간 확정 실적</span></div>
+  const revChips = (s.revShort || '').split('·').map(t => `<span class="rev-chip">${esc(t.trim())}</span>`).join('');
+  const revBlock = (isUS() || s.revShort)
+    ? `<div class="section-title">주요 수익원 · 사업 구조 <span class="hint">무엇으로 돈을 버는 회사인지</span></div>
+       <div class="revbox" id="d-rev"><div class="rev-chips">${revChips}</div><p class="muted rload">사업 구조 불러오는 중…</p></div>`
+    : '';
+
+  const finHint = isUS() ? 'Yahoo Finance 연간 확정 실적(USD)' : '네이버 금융 연간 확정 실적';
+  const discBlock = isUS() ? ''
+    : `<div class="section-title">최근 공시 <span class="hint">네이버 금융${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.disc}건` : ''}</span></div>
+       <div class="rlist" id="d-disc"><p class="muted rload">불러오는 중…</p></div>`;
+  const newsBlock = `<div class="section-title">최근 뉴스 <span class="hint">${isUS() ? 'Yahoo Finance' : '네이버 금융'}${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.news}건` : ''}</span></div>
+    <div class="rlist" id="d-news"><p class="muted rload">불러오는 중…</p></div>`;
+  const links = isUS() ? usLinks(s) : krLinks(s);
+
+  return `${stats}${revBlock}${chart}
+    <div class="section-title">3년 실적 <span class="hint">${finHint}</span></div>
     <div class="fin-detail"><span class="fin-k">영업이익</span>${finBadge(opSt, '', '영업이익', 'lg')}<span class="fin-k">순이익</span>${finBadge(niSt, '', '당기순이익', 'lg')}</div>
     ${finTable}
     <div class="section-title">시가총액 vs 영업이익×10</div>
     ${cmp}
-    <div class="section-title">최근 공시 <span class="hint">네이버 금융${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.disc}건` : ''}</span></div>
-    <div class="rlist" id="d-disc"><p class="muted rload">불러오는 중…</p></div>
-    <div class="section-title">최근 뉴스 <span class="hint">네이버 금융${state.meta && state.meta.extra ? ` · 최근 ${state.meta.extra.news}건` : ''}</span></div>
-    <div class="rlist" id="d-news"><p class="muted rload">불러오는 중…</p></div>
-    <div class="links">
+    ${discBlock}
+    ${newsBlock}
+    ${links}
+    ${note.length ? `<p class="dnote">⚠ ${note.join(' ')}</p>` : ''}
+    <p class="dnote">매물대는 최근 ${P}년 일별 ${isUS() ? '수정' : ''}종가·거래량을 20개 가격대로 나눈 분포입니다. 현재가 이하 누적 비중이 낮을수록 위쪽 매물이 적은 하단 구간입니다. 투자 판단 전 ${isUS() ? 'SEC 공시' : '공시'}로 다시 확인하세요.</p>`;
+}
+
+function krLinks(s) {
+  return `<div class="links">
       <a class="primary" href="https://stock.naver.com/domestic/stock/${s.c}/price" target="_blank" rel="noopener">네이버 금융</a>
       <a href="https://stock.naver.com/domestic/stock/${s.c}/notice" target="_blank" rel="noopener">네이버 공시</a>
       <a href="https://dart.fss.or.kr/dsab007/main.do?option=corp&amp;textCrpNm=${encodeURIComponent(s.n)}" target="_blank" rel="noopener">DART 공시</a>
       <a href="https://stock.naver.com/domestic/stock/${s.c}/info/financial" target="_blank" rel="noopener">기업 실적 분석</a>
-    </div>
-    ${note.length ? `<p class="dnote">⚠ ${note.join(' ')}</p>` : ''}
-    <p class="dnote">매물대는 최근 ${P}년 일별 종가·거래량을 20개 가격대로 나눈 분포입니다. 현재가 이하 누적 비중이 낮을수록 위쪽 매물이 적은 하단 구간입니다. 투자 판단 전 공시로 다시 확인하세요.</p>`;
+    </div>`;
+}
+
+/* 미국: 네이버 해외증권(확인된 종목 페이지) · Yahoo Finance · SEC EDGAR */
+function naverWorldUrl(s) {
+  return (s.nv && isSafeLink(s.nv)) ? s.nv : '';
+}
+
+function usLinks(s) {
+  const cik = s.cik ? String(s.cik).padStart(10, '0') : '';
+  const sec = cik
+    ? `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}&type=&dateb=&owner=include&count=40`
+    : `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(s.c)}`;
+  const nvLink = s.nv
+    ? `<a class="primary" href="${naverWorldUrl(s)}" target="_blank" rel="noopener">네이버 해외증권</a>` : '';
+  const yahoo = `<a class="${s.nv ? '' : 'primary'}" href="https://finance.yahoo.com/quote/${encodeURIComponent(s.c)}/" target="_blank" rel="noopener">Yahoo Finance</a>`;
+  return `<div class="links">
+      ${nvLink}
+      ${yahoo}
+      <a href="${sec}" target="_blank" rel="noopener">SEC 공시</a>
+      <a href="https://stockanalysis.com/stocks/${encodeURIComponent(s.c.toLowerCase())}/financials/" target="_blank" rel="noopener">재무제표</a>
+    </div>`;
 }
 
 /* 매물대 SVG: 가격은 세로축, 거래량 비중은 가로 막대 */
@@ -605,10 +845,12 @@ function vpSvg(s) {
 
   // 축
   g += `<line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="var(--line)" stroke-width="1"/>`;
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.n)} ${P}년 매물대 차트. 현재가 ${s.p}원, POC ${vp.poc}원, ${P}년 평균단가 ${vp.vwap}원">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.n)} ${P}년 매물대 차트. 현재가 ${isUS() ? '$' + s.p : s.p + '원'}, POC ${fmtPrice(vp.poc)}, ${P}년 평균단가 ${fmtPrice(vp.vwap)}">${g}</svg>`;
 }
 
 function priceLabel(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '–';
+  if (isUS()) return v >= 1000 ? '$' + nf.format(Math.round(v)) : '$' + v.toFixed(v < 10 ? 2 : 0);
   if (v >= 10000) return Math.round(v / 10000) + '만';
   return nf.format(Math.round(v));
 }
@@ -714,6 +956,12 @@ function applyPreset(p, doRender = true) {
     set('f-cum', 'low'); check('f-vwap', true); check('f-div', false); set('f-divmin', '0');
     set('f-q', '');
     set('f-rsi-min', ''); set('f-rsi-max', '35');
+  } else if (p === 'value') {
+    /* 저평가 흑자주: 3년 연속 흑자 + 영업이익×10 > 시가총액 */
+    set('f-market', 'all'); set('f-profit', 'op3'); check('f-value', true);
+    set('f-cum', 'all'); check('f-vwap', false); check('f-div', false); set('f-divmin', '0');
+    set('f-q', '');
+    set('f-rsi-min', ''); set('f-rsi-max', '');
   }
   setWatchOnly(false);
   setPreset(p);
@@ -748,6 +996,9 @@ function refreshFiltersToggle() {
 }
 
 function bindEvents() {
+  document.querySelectorAll('.tab').forEach(btn =>
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
   document.querySelectorAll('.seg-btn[data-period]').forEach(btn =>
     btn.addEventListener('click', () => setPeriod(Number(btn.dataset.period))));
 
@@ -832,9 +1083,14 @@ function bindEvents() {
   });
 }
 
-load().catch(err => {
-  const st = document.getElementById('status');
-  st.textContent = '데이터를 불러오지 못했습니다: ' + err.message;
-  st.classList.add('warn');
+/* 시작: 국내 탭 로드 → 이벤트 연결 */
+bindEvents();
+loadTab('kr').then(() => {
+  loadWatch();
+  initFilterToggle();
+  if (state.meta) filterRows();   // 저장된 관심종목 별 표시 반영
+  updateWatchCount();
+}).catch(err => {
+  setStatus('데이터를 불러오지 못했습니다: ' + err.message, true);
   console.error(err);
 });

@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>국내주식 매물대 스크리너 · 1~5년 매물대·재무·배당·RSI</title>
-<meta name="description" content="코스피·코스닥 보통주 2,500여 종목과 코스피200의 1~5년 매물대(POC·누적 백분위), 평균단가(VWAP), RSI(14), 3년 영업이익·순이익, 배당수익률·주당배당금, 최근 공시·뉴스, 시가총액을 한 화면에서 거르는 스크리너.">
-<link rel="stylesheet" href="style.css?v=20261127a">
+<title>국내·미국 주식 매물대 스크리너 · 1~5년 매물대·재무·배당·RSI</title>
+<meta name="description" content="코스피·코스닥 보통주 2,500여 종목과 미국 S&P 500·NASDAQ 100·S&P 400 약 920종목의 1~5년 매물대(POC·누적 백분위), 평균단가(VWAP), RSI(14), 3년 영업이익·순이익, 배당수익률, 주요 수익원, 최근 뉴스·공시, 시가총액을 한 화면에서 거르는 스크리너.">
+<link rel="stylesheet" href="style.css?v=20261127c">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f45d0'/%3E%3Cpath d='M7 21l5-7 4 4 4-6 5 5' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
-<body>
+<body data-tab="kr">
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
@@ -17,10 +17,14 @@
         <svg viewBox="0 0 32 32" width="30" height="30"><rect width="32" height="32" rx="8" fill="#2f45d0"/><path d="M7 21l5-7 4 4 4-6 5 5" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </span>
       <div>
-        <h1>국내주식 매물대 스크리너</h1>
-        <p class="tagline">1~5년 매물대 · 평균단가 · RSI(14) · 배당 · 3년 실적 · 공시·뉴스</p>
+        <h1 id="app-title">국내주식 매물대 스크리너</h1>
+        <p class="tagline" id="app-tagline">1~5년 매물대 · 평균단가 · RSI(14) · 배당 · 3년 실적 · 공시·뉴스</p>
       </div>
     </div>
+    <nav class="tabs" role="tablist" aria-label="시장 선택">
+      <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="kr">🇰🇷 국내</button>
+      <button type="button" class="tab" role="tab" aria-selected="false" data-tab="us">🇺🇸 미국</button>
+    </nav>
     <div class="status" id="status">데이터 불러오는 중…</div>
   </div>
 </header>
@@ -30,6 +34,7 @@
     <button class="preset active" data-preset="all">전체 종목 <span class="pill" id="cnt-all">–</span></button>
     <button class="preset" data-preset="bottom">매물대 하단 + 과매도(RSI≤35) <span class="pill" id="cnt-bottom">–</span></button>
     <button class="preset" data-preset="mine">내 기준 전체 통과 <span class="pill" id="cnt-mine">–</span></button>
+    <button class="preset preset-us" data-preset="value">저평가 흑자주 <span class="pill" id="cnt-value">–</span></button>
   </section>
 
   <section class="periods" aria-label="매물대 기간">
@@ -75,7 +80,7 @@
     </div>
     <div class="filter-grid" id="filter-grid">
       <label class="field">
-        <span>시장</span>
+        <span id="lbl-market">시장</span>
         <select id="f-market">
           <option value="all">전체</option>
           <option value="K">코스피</option>
@@ -172,7 +177,7 @@
         <div class="th-star">찜</div>
         <div>종목</div>
         <div class="num">현재가</div>
-        <div class="num">시가총액</div>
+        <div class="num" id="lbl-th-cap">시가총액</div>
         <div class="num">배당</div>
         <div class="num">RSI(14)</div>
         <div class="num">매물대 위치</div>
@@ -189,7 +194,7 @@
     <button class="more" id="more" hidden>더 보기</button>
   </section>
 
-  <section class="guide">
+  <section class="guide" data-guide="kr">
     <details>
       <summary>지표 계산 방식과 데이터 출처</summary>
       <div class="guide-body">
@@ -236,8 +241,45 @@
     </details>
   </section>
 
+  <section class="guide" data-guide="us" hidden>
+    <details>
+      <summary>미국 종목 지표 계산 방식과 데이터 출처</summary>
+      <div class="guide-body">
+        <dl>
+          <dt>종목 범위</dt>
+          <dd>미국 <b>S&P 500 · S&P 400 · NASDAQ 100</b> 구성종목을 합쳐 중복을 뺀 약 920개 기업입니다. ETF·ETN 같은 상품과 스팩은 넣지 않았습니다. 지수 필터에서 <b>S&P 500</b> 또는 <b>나스닥 100</b>만 골라 볼 수 있습니다.</dd>
+          <dt>화폐 단위</dt>
+          <dd>모든 가격·시가총액·영업이익·배당은 <b>달러(USD)</b> 기준입니다. 시가총액과 실적은 <b>$5.17T</b>(조 달러)·<b>$158.1B</b>(십억 달러)처럼 줄여 표시하고, 상세 화면에서는 조·억 달러로도 함께 보여줍니다.</dd>
+          <dt>매물대 (Volume Profile)</dt>
+          <dd>선택한 기간(1~5년)의 일별 <b>수정주가 종가·거래량</b>을 가격 20구간으로 나눠 누적한 분포입니다. <b>POC</b>는 거래량이 가장 많았던 가격대의 중심 가격입니다.</dd>
+          <dt>매물대 위치 · 평균단가</dt>
+          <dd>현재가 이하 가격대에 쌓인 거래량 비율(누적 백분위)로 <b>🟢 바닥권(30% 이하) · 🟡 중간 · 🔴 상단(70% 초과)</b>을 표시합니다. 평균단가는 선택 기간 일별 종가의 거래량 가중평균(VWAP)입니다.</dd>
+          <dt>RSI(14)</dt>
+          <dd>일별 종가 기준 와일더 방식 RSI(14)입니다. 30 이하는 과매도, 70 이상은 과매수로 흔히 봅니다.</dd>
+          <dt>3년 실적 · 4색 뱃지</dt>
+          <dd>Yahoo Finance 의 최근 3개 사업연도 <b>영업이익·순이익</b>(확정치)으로 <b>🟢 3년 흑자 · 🔵 흑자전환 · 🟡 최근 적자 · 🔴 계속 적자</b>를 냅니다. 은행처럼 영업이익을 따로 공시하지 않는 기업은 ‘–’로 표시됩니다.</dd>
+          <dt>영업이익 × 10 &gt; 시가총액</dt>
+          <dd>최근 사업연도 영업이익의 10배가 시가총액보다 크면(배수 10배 미만) 통과입니다. 국내 탭과 같은 기준입니다.</dd>
+          <dt>배당수익률</dt>
+          <dd>최근 1년간 지급된 <b>주당배당금 합계</b>를 현재가로 나눈 값입니다. 배당을 지급하지 않은 기업은 ‘–’입니다.</dd>
+          <dt>주요 수익원 · 사업 구조</dt>
+          <dd>목록의 종목명 아래 한 줄 요약(예: <b>AI GPU · 데이터센터 · 게임칩</b>)은 업종과 기업 사업 구조를 한국어로 정리한 것입니다. 상세 화면에서는 <b>2~3줄 설명</b>(주요 사업부·제품·수익 모델)과 <b>기업 공식 홈페이지</b>·업종 정보를 함께 보여줍니다. 설명은 Yahoo Finance 사업 요약을 바탕으로 정리했습니다.</dd>
+          <dt>최근 뉴스 · 공시</dt>
+          <dd>상세 화면에서 종목별 <b>최근 뉴스 3건</b>(Yahoo Finance)을 불러옵니다. 공시는 아래 <b>SEC 공시</b> 링크에서 원문을 확인하세요(티커를 SEC CIK 로 바꾼 EDGAR 공시 목록).</dd>
+          <dt>외부 링크</dt>
+          <dd>상세 화면 아래 링크로 <b>네이버 해외증권</b>·<b>Yahoo Finance</b>·<b>SEC 공시</b>·<b>기업 홈페이지</b>가 열립니다. 네이버에 등록된 종목은 네이버 해외증권이 대표 링크이고, 네이버에 없는 종목은 <b>Yahoo Finance</b>가 대표 링크가 됩니다.</dd>
+          <dt>갱신 주기</dt>
+          <dd>미국장이 마감된 뒤 평일 17:00 KST 에 국내 데이터와 함께 자동 갱신됩니다. 미국 공휴일·주말에는 직전 거래일 데이터가 그대로 유지됩니다.</dd>
+          <dt>데이터 출처</dt>
+          <dd>일별 시세·연간 실적·시가총액·배당·사업 요약·뉴스: Yahoo Finance(수정주가). 종목 목록: Wikipedia·slickcharts 구성종목, SEC EDGAR. 일부 수치는 데이터 제공처 사정에 따라 실제와 다를 수 있습니다.</dd>
+        </dl>
+        <p class="disclaimer">이 화면은 공개 데이터를 정리한 참고 자료이며 투자 권유가 아닙니다. 투자 판단 전에 증권사 HTS·SEC 공시로 다시 확인하세요.</p>
+      </div>
+    </details>
+  </section>
+
   <footer class="foot">
-    <span id="generated">–</span> · 매일 장 마감 후 자동 갱신 (평일 17:00 KST)
+    <span id="generated">–</span> · <span id="foot-note">매일 장 마감 후 자동 갱신 (평일 17:00 KST)</span>
   </footer>
 </main>
 
@@ -268,6 +310,6 @@
   </aside>
 </div>
 
-<script src="app.js?v=20261127a"></script>
+<script src="app.js?v=20261127c"></script>
 </body>
 </html>
