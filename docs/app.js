@@ -426,19 +426,19 @@ function rowHtml(s) {
   const chgHtml = chg === null ? ''
     : `<span class="chg ${signCls(chg)}" title="전일 종가 대비 등락률">${fmtChg(chg)}</span>`;
 
-  /* 주요 수익원 한 줄 — 종목명 오른쪽에 나란히 (좁으면 다음 줄로 자연스럽게 넘어감) */
+  /* 주요 수익원 — 종목명·코드 줄 아래에 한 줄 전체 폭으로 */
   const rev = s.revShort
     ? `<span class="rev-line" title="주요 수익원: ${esc(s.revShort)}">${esc(s.revShort)}</span>`
     : '';
   const codeLine = isUS()
-    ? `<div class="code-line"><span>${s.c}</span><span class="mkt ${s.x === 'NYSE' ? 'NY' : 'US'}">${esc(s.x || 'US')}</span>${idxBadges(s)}</div>`
-    : `<div class="code-line"><span>${s.c}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${idxBadges(s)}</div>`;
+    ? `<span class="code-line"><span class="scode">${s.c}</span><span class="mkt ${s.x === 'NYSE' ? 'NY' : 'US'}">${esc(s.x || 'US')}</span>${idxBadges(s)}${short}${stale}</span>`
+    : `<span class="code-line"><span class="scode">${s.c}</span><span class="mkt ${s.m}">${mktName(s.m)}</span>${idxBadges(s)}${short}${stale}</span>`;
 
   return `<div class="row" data-code="${s.c}" role="row" tabindex="0">
     <div class="cell star">${starBtn(s.c)}</div>
     <div class="cell name">
-      <div class="name-line"><span class="stock-name">${esc(s.n)}</span>${short}${stale}${rev}</div>
-      ${codeLine}
+      <div class="name-line"><span class="stock-name" title="${esc(s.n)}">${esc(s.n)}</span>${codeLine}</div>
+      ${rev}
     </div>
     <div class="cell num price-cell" data-label="현재가"><span class="price">${fmtPrice(s.p)}</span>${chgHtml}</div>
     <div class="cell num" data-label="시가총액">${fmtCap(s.mc)}</div>
